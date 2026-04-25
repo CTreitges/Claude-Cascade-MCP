@@ -144,6 +144,7 @@ async def call_planner(
         system_prompt=PLANNER_SYSTEM,
         attachments=attachments,
         output_json=True,
+        effort=s.cascade_planner_effort or None,
     )
     data = parse_json_payload(result.text)
     return Plan.model_validate(data)

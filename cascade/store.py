@@ -68,6 +68,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     planner_model TEXT,
     implementer_model TEXT,
     reviewer_model TEXT,
+    planner_effort TEXT,
+    reviewer_effort TEXT,
+    triage_effort TEXT,
+    replan_max INTEGER,
     updated_at  REAL NOT NULL
 );
 """
@@ -77,6 +81,10 @@ _MIGRATIONS = [
     "ALTER TABLE sessions ADD COLUMN planner_model TEXT",
     "ALTER TABLE sessions ADD COLUMN implementer_model TEXT",
     "ALTER TABLE sessions ADD COLUMN reviewer_model TEXT",
+    "ALTER TABLE sessions ADD COLUMN planner_effort TEXT",
+    "ALTER TABLE sessions ADD COLUMN reviewer_effort TEXT",
+    "ALTER TABLE sessions ADD COLUMN triage_effort TEXT",
+    "ALTER TABLE sessions ADD COLUMN replan_max INTEGER",
 ]
 
 
@@ -384,6 +392,36 @@ class Store:
                 (chat_id, model, time.time()),
             )
 
+    async def set_chat_effort(
+        self,
+        chat_id: int,
+        worker: str,  # "planner" | "reviewer" | "triage"
+        effort: str | None,  # "low"|"medium"|"high"|"xhigh"|"max" or None to clear
+    ) -> None:
+        if worker not in ("planner", "reviewer", "triage"):
+            raise ValueError(f"effort not applicable to worker: {worker}")
+        col = f"{worker}_effort"
+        async with self._tx() as c:
+            await c.execute(
+                f"""INSERT INTO sessions (chat_id, {col}, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(chat_id) DO UPDATE SET
+                      {col} = excluded.{col},
+                      updated_at = excluded.updated_at""",
+                (chat_id, effort, time.time()),
+            )
+
+    async def set_chat_replan_max(self, chat_id: int, replan_max: int | None) -> None:
+        async with self._tx() as c:
+            await c.execute(
+                """INSERT INTO sessions (chat_id, replan_max, updated_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(chat_id) DO UPDATE SET
+                     replan_max = excluded.replan_max,
+                     updated_at = excluded.updated_at""",
+                (chat_id, replan_max, time.time()),
+            )
+
     async def get_chat_session(self, chat_id: int) -> dict[str, Any] | None:
         async with self._conn.execute(
             "SELECT * FROM sessions WHERE chat_id = ?", (chat_id,)
@@ -398,5 +436,9 @@ class Store:
             "planner_model": row["planner_model"],
             "implementer_model": row["implementer_model"],
             "reviewer_model": row["reviewer_model"],
+            "planner_effort": row["planner_effort"],
+            "reviewer_effort": row["reviewer_effort"],
+            "triage_effort": row["triage_effort"],
+            "replan_max": row["replan_max"],
             "updated_at": row["updated_at"],
         }

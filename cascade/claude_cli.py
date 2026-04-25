@@ -46,6 +46,7 @@ async def claude_call(
     timeout_s: float = 600,
     bare: bool = False,
     extra_flags: list[str] | None = None,
+    effort: str | None = None,
 ) -> ClaudeResult:
     """Invoke `claude -p` and return the result.
 
@@ -58,6 +59,8 @@ async def claude_call(
     if output_json:
         args += ["--output-format", "json"]
     args += ["--model", model]
+    if effort:
+        args += ["--effort", effort]
     if system_prompt:
         args += ["--system-prompt", system_prompt]
     if extra_flags:

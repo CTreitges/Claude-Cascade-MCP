@@ -124,6 +124,8 @@ _STRINGS: dict[str, dict[Lang, str]] = {
             "/git <repo> <subcmd …>  — git auf einem Pfad (Whitelist)\n"
             "/lang <de|en>  — Bot-Sprache umstellen\n"
             "/models        — Modell pro Worker (Planner/Implementer/Reviewer) wählen\n"
+            "/effort        — Effort-Stufe pro Worker (low|medium|high|xhigh|max)\n"
+            "/replan [n]    — Replan-Budget setzen (0..10) oder mit Buttons wählen\n"
             "/help          — diese Übersicht"
         ),
         "en": (
@@ -139,6 +141,8 @@ _STRINGS: dict[str, dict[Lang, str]] = {
             "/git <repo> <subcmd …>  — git on a path (whitelist)\n"
             "/lang <de|en>  — switch bot language\n"
             "/models        — choose model per worker (Planner/Implementer/Reviewer)\n"
+            "/effort        — effort level per worker (low|medium|high|xhigh|max)\n"
+            "/replan [n]    — set replan budget (0..10) or pick via buttons\n"
             "/help          — this message"
         ),
     },

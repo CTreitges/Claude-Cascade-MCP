@@ -78,6 +78,7 @@ async def call_reviewer(
         model=s.cascade_reviewer_model,
         system_prompt=REVIEWER_SYSTEM,
         output_json=True,
+        effort=s.cascade_reviewer_effort or None,
     )
     data = parse_json_payload(result.text)
     return ReviewResult.model_validate(data)

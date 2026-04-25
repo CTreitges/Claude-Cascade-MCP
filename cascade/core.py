@@ -76,6 +76,10 @@ async def run_cascade(
     implementer_tools: Literal["fileops", "mcp"] | None = None,
     planner_model: str | None = None,
     reviewer_model: str | None = None,
+    planner_effort: str | None = None,
+    reviewer_effort: str | None = None,
+    triage_effort: str | None = None,  # picked up by Settings; bot.on_text uses it for its own triage call
+    replan_max: int | None = None,
     progress: ProgressCallback = _noop,
     s: Settings | None = None,
     store: Store | None = None,
@@ -89,13 +93,15 @@ async def run_cascade(
     `cancel_event.set()` mid-run aborts cleanly between agent calls.
     """
     s = s or settings()
-    if planner_model or reviewer_model:
-        # Apply per-call overrides without mutating the shared singleton:
-        # build a derived Settings that the agents will receive.
-        s = s.model_copy(update={
-            **({"cascade_planner_model": planner_model} if planner_model else {}),
-            **({"cascade_reviewer_model": reviewer_model} if reviewer_model else {}),
-        })
+    overrides: dict = {}
+    if planner_model: overrides["cascade_planner_model"] = planner_model
+    if reviewer_model: overrides["cascade_reviewer_model"] = reviewer_model
+    if planner_effort: overrides["cascade_planner_effort"] = planner_effort
+    if reviewer_effort: overrides["cascade_reviewer_effort"] = reviewer_effort
+    if triage_effort: overrides["cascade_triage_effort"] = triage_effort
+    if replan_max is not None: overrides["cascade_replan_max"] = replan_max
+    if overrides:
+        s = s.model_copy(update=overrides)
     cancel_event = cancel_event or asyncio.Event()
     own_store = store is None
     if store is None:

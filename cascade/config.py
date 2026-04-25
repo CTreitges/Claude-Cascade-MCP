@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     cascade_reviewer_model: str = "claude-sonnet-4-6"
     cascade_triage_model: str = "claude-sonnet-4-6"
     cascade_triage_enabled: bool = True
+    # Effort levels passed via `claude -p --effort <level>`. Allowed: low,
+    # medium, high, xhigh, max. Empty string → omit the flag (use Claude's default).
+    cascade_planner_effort: str = ""
+    cascade_reviewer_effort: str = ""
+    cascade_triage_effort: str = ""
 
     cascade_home: Path = Field(default_factory=lambda: Path.home() / "claude-cascade")
     cascade_timezone: str = "Europe/Berlin"

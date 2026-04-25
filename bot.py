@@ -52,6 +52,9 @@ _LANG_OVERRIDE: dict[int, str] = {}
 
 GIT_WHITELIST = {"status", "log", "diff", "branch", "checkout", "pull", "push", "commit", "show"}
 
+EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"]
+REPLAN_CHOICES = [0, 1, 2, 3, 5]
+
 
 def _lang(update: Update) -> str:
     if update.effective_chat and update.effective_chat.id in _LANG_OVERRIDE:
@@ -127,6 +130,10 @@ async def _run_task_for_chat(
     impl_provider = implementer_provider(impl_model) if impl_model else None
     plan_model = (sess or {}).get("planner_model")
     rev_model = (sess or {}).get("reviewer_model")
+    plan_effort = (sess or {}).get("planner_effort") or None
+    rev_effort = (sess or {}).get("reviewer_effort") or None
+    tri_effort = (sess or {}).get("triage_effort") or None
+    chat_replan_max = (sess or {}).get("replan_max")
 
     lang = _lang(update)
     initial = t("progress.planning_initial", lang=lang)
@@ -157,6 +164,10 @@ async def _run_task_for_chat(
         implementer_provider=impl_provider,
         planner_model=plan_model,
         reviewer_model=rev_model,
+        planner_effort=plan_effort,
+        reviewer_effort=rev_effort,
+        triage_effort=tri_effort,
+        replan_max=chat_replan_max,
         progress=progress,
         s=s,
         store=store,
@@ -380,6 +391,184 @@ async def on_models_callback(update: Update, ctx) -> None:
         )
         await q.edit_message_text(confirm, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
         return
+
+
+async def cmd_effort(update: Update, ctx) -> None:
+    if not await _owner_only(update, ctx):
+        return
+    lang = _lang(update)
+    store: Store = ctx.application.bot_data["store"]
+    sess = await store.get_chat_session(update.effective_chat.id) or {}
+    s = settings()
+
+    cur_p = sess.get("planner_effort") or s.cascade_planner_effort or "default"
+    cur_r = sess.get("reviewer_effort") or s.cascade_reviewer_effort or "default"
+    cur_t = sess.get("triage_effort") or s.cascade_triage_effort or "default"
+
+    text, kb = _effort_main_view(lang, cur_p, cur_r, cur_t)
+    await update.effective_message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+
+def _effort_main_view(lang: str, p: str, r: str, t: str):
+    if lang == "de":
+        text = (
+            "*Aktuelle Effort-Stufen:*\n"
+            f"• Planner:  `{p}`\n"
+            f"• Reviewer: `{r}`\n"
+            f"• Triage:   `{t}`\n\n"
+            "Welchen Worker ändern?"
+        )
+        close = "✖ Schliessen"
+    else:
+        text = (
+            "*Current effort levels:*\n"
+            f"• Planner:  `{p}`\n"
+            f"• Reviewer: `{r}`\n"
+            f"• Triage:   `{t}`\n\n"
+            "Which worker do you want to change?"
+        )
+        close = "✖ Close"
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🧠 Planner", callback_data="e:w:planner")],
+        [InlineKeyboardButton("🔍 Reviewer", callback_data="e:w:reviewer")],
+        [InlineKeyboardButton("🤖 Triage", callback_data="e:w:triage")],
+        [InlineKeyboardButton(close, callback_data="e:close")],
+    ])
+    return text, kb
+
+
+async def on_effort_callback(update: Update, ctx) -> None:
+    if not await _owner_only(update, ctx):
+        return
+    q = update.callback_query
+    await q.answer()
+    data = q.data or ""
+    lang = _lang(update)
+    store: Store = ctx.application.bot_data["store"]
+    chat_id = update.effective_chat.id
+
+    if data == "e:back":
+        sess = await store.get_chat_session(chat_id) or {}
+        s = settings()
+        text, kb = _effort_main_view(
+            lang,
+            sess.get("planner_effort") or s.cascade_planner_effort or "default",
+            sess.get("reviewer_effort") or s.cascade_reviewer_effort or "default",
+            sess.get("triage_effort") or s.cascade_triage_effort or "default",
+        )
+        await q.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+        return
+
+    if data == "e:close":
+        await q.edit_message_text("✓" if lang == "en" else "✓ Geschlossen.")
+        return
+
+    if data.startswith("e:w:"):
+        worker = data.split(":", 2)[2]
+        buttons = [
+            [InlineKeyboardButton(level, callback_data=f"e:s:{worker}:{level}")]
+            for level in EFFORT_LEVELS
+        ]
+        # Allow clearing back to default
+        buttons.append([InlineKeyboardButton(
+            "⟲ default" if lang == "en" else "⟲ Standard",
+            callback_data=f"e:s:{worker}:_clear")])
+        buttons.append([InlineKeyboardButton(
+            "← Back" if lang == "en" else "← Zurück", callback_data="e:back")])
+        prompt = f"Effort für *{worker}* wählen:" if lang == "de" else f"Pick effort for *{worker}*:"
+        await q.edit_message_text(prompt, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if data.startswith("e:s:"):
+        _, _, worker, level = data.split(":", 3)
+        value = None if level == "_clear" else level
+        await store.set_chat_effort(chat_id, worker, value)
+        sess = await store.get_chat_session(chat_id) or {}
+        s = settings()
+        text, kb = _effort_main_view(
+            lang,
+            sess.get("planner_effort") or s.cascade_planner_effort or "default",
+            sess.get("reviewer_effort") or s.cascade_reviewer_effort or "default",
+            sess.get("triage_effort") or s.cascade_triage_effort or "default",
+        )
+        shown = value or ("default" if lang == "en" else "Standard")
+        confirm = f"✅ {worker} → `{shown}`\n\n{text}"
+        await q.edit_message_text(confirm, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+        return
+
+
+async def cmd_replan(update: Update, ctx) -> None:
+    if not await _owner_only(update, ctx):
+        return
+    lang = _lang(update)
+    store: Store = ctx.application.bot_data["store"]
+    sess = await store.get_chat_session(update.effective_chat.id) or {}
+    s = settings()
+    cur = sess.get("replan_max")
+    cur_display = cur if cur is not None else f"default ({s.cascade_replan_max})"
+
+    args = ctx.args or []
+    if not args:
+        # Show current + inline keyboard with quick choices
+        if lang == "de":
+            head = (
+                f"*Replan-Budget* — Anzahl Replans wenn Loop steckenbleibt.\n"
+                f"Aktuell: `{cur_display}`\n\n"
+                f"Wähle eine Stufe oder nutze `/replan <n>`:"
+            )
+        else:
+            head = (
+                f"*Replan budget* — how often the planner can rewrite the plan when the loop is stuck.\n"
+                f"Current: `{cur_display}`\n\n"
+                f"Pick a level or use `/replan <n>`:"
+            )
+        buttons = [
+            [InlineKeyboardButton(f"{n} — {'aus' if (lang=='de' and n==0) else ('off' if n==0 else f'{n}×')}",
+                                   callback_data=f"r:s:{n}")]
+            for n in REPLAN_CHOICES
+        ]
+        buttons.append([InlineKeyboardButton(
+            "⟲ Standard" if lang == "de" else "⟲ default", callback_data="r:s:_clear")])
+        await update.effective_message.reply_text(
+            head, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return
+
+    try:
+        n = int(args[0])
+        if n < 0 or n > 10:
+            raise ValueError("out of range 0..10")
+    except ValueError:
+        await update.effective_message.reply_text(
+            "Aufruf: /replan <n>  (n=0..10)" if lang == "de" else "Usage: /replan <n>  (n=0..10)"
+        )
+        return
+    await store.set_chat_replan_max(update.effective_chat.id, n)
+    await update.effective_message.reply_text(
+        f"✅ Replan-Budget = `{n}`" if lang == "de" else f"✅ Replan budget = `{n}`",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def on_replan_callback(update: Update, ctx) -> None:
+    if not await _owner_only(update, ctx):
+        return
+    q = update.callback_query
+    await q.answer()
+    lang = _lang(update)
+    data = q.data or ""
+    store: Store = ctx.application.bot_data["store"]
+    chat_id = update.effective_chat.id
+    if data.startswith("r:s:"):
+        raw = data.split(":", 2)[2]
+        if raw == "_clear":
+            await store.set_chat_replan_max(chat_id, None)
+            txt = "✅ Replan-Budget = Standard" if lang == "de" else "✅ Replan budget = default"
+        else:
+            n = int(raw)
+            await store.set_chat_replan_max(chat_id, n)
+            txt = f"✅ Replan-Budget = `{n}`" if lang == "de" else f"✅ Replan budget = `{n}`"
+        await q.edit_message_text(txt, parse_mode=ParseMode.MARKDOWN)
 
 
 async def cmd_lang(update: Update, ctx) -> None:
@@ -642,6 +831,12 @@ async def on_text(update: Update, ctx) -> None:
         )
     context = "\n".join(context_lines) if context_lines else None
 
+    # Per-chat triage_effort override (so /effort triage low/high actually applies
+    # to the on_text triage call too, not only to in-cascade triage).
+    sess_now = await store.get_chat_session(update.effective_chat.id) or {}
+    if sess_now.get("triage_effort"):
+        s = s.model_copy(update={"cascade_triage_effort": sess_now["triage_effort"]})
+
     try:
         verdict = await triage(text, lang=lang, s=s, context=context)
     except Exception as e:
@@ -773,7 +968,11 @@ def main() -> None:
     app.add_handler(CommandHandler("git", cmd_git))
     app.add_handler(CommandHandler("lang", cmd_lang))
     app.add_handler(CommandHandler("models", cmd_models))
+    app.add_handler(CommandHandler("effort", cmd_effort))
+    app.add_handler(CommandHandler("replan", cmd_replan))
     app.add_handler(CallbackQueryHandler(on_models_callback, pattern=r"^m:"))
+    app.add_handler(CallbackQueryHandler(on_effort_callback, pattern=r"^e:"))
+    app.add_handler(CallbackQueryHandler(on_replan_callback, pattern=r"^r:"))
 
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, on_voice))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, on_photo_or_document))

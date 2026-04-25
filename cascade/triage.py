@@ -110,6 +110,7 @@ async def triage(
             system_prompt=system,
             output_json=True,
             timeout_s=60,
+            effort=s.cascade_triage_effort or None,
         )
     except ClaudeCliError as e:
         log.warning("triage claude call failed (%s) — falling back to heuristic", e)
