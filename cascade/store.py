@@ -61,6 +61,28 @@ CREATE TABLE IF NOT EXISTS logs (
 );
 CREATE INDEX IF NOT EXISTS idx_logs_task_ts ON logs(task_id, ts);
 
+CREATE TABLE IF NOT EXISTS skills (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT UNIQUE NOT NULL,
+    description   TEXT,
+    task_template TEXT NOT NULL,
+    rationale     TEXT,
+    source_task_ids TEXT,
+    usage_count   INTEGER NOT NULL DEFAULT 0,
+    created_at    REAL NOT NULL,
+    last_used_at  REAL
+);
+CREATE INDEX IF NOT EXISTS idx_skills_name ON skills(name);
+
+CREATE TABLE IF NOT EXISTS skill_suggestions (
+    task_id     TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+    suggestion_json TEXT NOT NULL,
+    chat_id     INTEGER,
+    created_at  REAL NOT NULL,
+    decided_at  REAL,
+    decision    TEXT  -- 'accepted' | 'rejected' | NULL
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
     chat_id     INTEGER PRIMARY KEY,
     repo_path   TEXT,
@@ -409,6 +431,91 @@ class Store:
                       {col} = excluded.{col},
                       updated_at = excluded.updated_at""",
                 (chat_id, effort, time.time()),
+            )
+
+    # ---------- skills ----------
+
+    async def create_skill(
+        self,
+        *,
+        name: str,
+        description: str | None,
+        task_template: str,
+        rationale: str | None = None,
+        source_task_ids: list[str] | None = None,
+    ) -> int:
+        async with self._tx() as c:
+            cur = await c.execute(
+                """INSERT INTO skills (name, description, task_template, rationale,
+                                       source_task_ids, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    name,
+                    description,
+                    task_template,
+                    rationale,
+                    json.dumps(source_task_ids or []),
+                    time.time(),
+                ),
+            )
+            return cur.lastrowid or 0
+
+    async def list_skills(self) -> list[dict]:
+        async with self._conn.execute(
+            "SELECT * FROM skills ORDER BY usage_count DESC, created_at DESC"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def get_skill_by_name(self, name: str) -> dict | None:
+        async with self._conn.execute(
+            "SELECT * FROM skills WHERE name = ?", (name,)
+        ) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def delete_skill(self, name: str) -> bool:
+        async with self._tx() as c:
+            cur = await c.execute("DELETE FROM skills WHERE name = ?", (name,))
+            return (cur.rowcount or 0) > 0
+
+    async def increment_skill_usage(self, name: str) -> None:
+        async with self._tx() as c:
+            await c.execute(
+                "UPDATE skills SET usage_count = usage_count + 1, last_used_at = ? WHERE name = ?",
+                (time.time(), name),
+            )
+
+    async def record_skill_suggestion(
+        self,
+        task_id: str,
+        suggestion: dict,
+        chat_id: int | None,
+    ) -> None:
+        async with self._tx() as c:
+            await c.execute(
+                """INSERT OR REPLACE INTO skill_suggestions
+                   (task_id, suggestion_json, chat_id, created_at)
+                   VALUES (?, ?, ?, ?)""",
+                (task_id, json.dumps(suggestion), chat_id, time.time()),
+            )
+
+    async def get_skill_suggestion(self, task_id: str) -> dict | None:
+        async with self._conn.execute(
+            "SELECT * FROM skill_suggestions WHERE task_id = ?", (task_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return None
+        out = dict(row)
+        out["suggestion"] = json.loads(out.pop("suggestion_json"))
+        return out
+
+    async def mark_skill_suggestion_decided(self, task_id: str, decision: str) -> None:
+        async with self._tx() as c:
+            await c.execute(
+                "UPDATE skill_suggestions SET decision = ?, decided_at = ? WHERE task_id = ?",
+                (decision, time.time(), task_id),
             )
 
     async def set_chat_replan_max(self, chat_id: int, replan_max: int | None) -> None:

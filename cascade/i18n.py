@@ -126,6 +126,8 @@ _STRINGS: dict[str, dict[Lang, str]] = {
             "/models        — Modell pro Worker (Planner/Implementer/Reviewer) wählen\n"
             "/effort        — Effort-Stufe pro Worker (low|medium|high|xhigh|max)\n"
             "/replan [n]    — Replan-Budget setzen (0..10) oder mit Buttons wählen\n"
+            "/skills        — gespeicherte Skills auflisten (auto-vorgeschlagen nach Runs)\n"
+            "/run <name>    — gespeicherten Skill mit args ausführen\n"
             "/help          — diese Übersicht"
         ),
         "en": (
@@ -143,6 +145,8 @@ _STRINGS: dict[str, dict[Lang, str]] = {
             "/models        — choose model per worker (Planner/Implementer/Reviewer)\n"
             "/effort        — effort level per worker (low|medium|high|xhigh|max)\n"
             "/replan [n]    — set replan budget (0..10) or pick via buttons\n"
+            "/skills        — list saved skills (auto-suggested after runs)\n"
+            "/run <name>    — run a saved skill with args\n"
             "/help          — this message"
         ),
     },

@@ -18,6 +18,7 @@ from .agents.reviewer import ReviewResult, call_reviewer
 from .config import Settings, settings
 from .memory import recall_context, remember_finding
 from .repo_resolver import discover_local_repos, repos_for_planner_prompt, resolve_repo
+from .skill_suggester import maybe_suggest_skill
 from .store import Store, Task
 from .workspace import Workspace, cleanup_old_workspaces
 
@@ -335,6 +336,44 @@ async def run_cascade(
                     await remember_finding(
                         f"Cascade task '{task[:80]}': {review.feedback or 'completed cleanly'}"
                     )
+
+                # Auto-skill suggestion (best-effort, non-blocking on failure).
+                if s.cascade_auto_skill_suggest:
+                    try:
+                        recent = await store.list_tasks(limit=10, status="done")
+                        # exclude the current task to avoid double-counting
+                        recent = [t for t in recent if t.id != task_id][:8]
+                        existing = await store.list_skills()
+                        cur_task = await store.get_task(task_id)
+                        # Cooldown: when did we last *make* a suggestion?
+                        last_sug_ts = max(
+                            (sk.get("created_at") or 0 for sk in existing),
+                            default=0,
+                        )
+                        sug = await maybe_suggest_skill(
+                            current_task=cur_task,
+                            recent_tasks=recent,
+                            existing_skills=existing,
+                            s=s,
+                            cooldown_s=s.cascade_skill_suggest_cooldown_s,
+                            last_suggested_at=last_sug_ts or None,
+                        )
+                        if sug:
+                            await store.record_skill_suggestion(
+                                task_id, sug.model_dump(), chat_id=None
+                            )
+                            await _emit(
+                                progress, store, task_id, "skill_suggested",
+                                {
+                                    "name": sug.name,
+                                    "description": sug.description,
+                                    "task_template": sug.task_template,
+                                    "placeholders": sug.placeholders,
+                                    "rationale": sug.rationale,
+                                },
+                            )
+                    except Exception as e:
+                        await _log(store, task_id, "warn", f"skill suggest failed: {e}")
 
                 return CascadeResult(
                     task_id=task_id,

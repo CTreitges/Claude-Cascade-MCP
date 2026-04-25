@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     # rewrite the plan and quality_checks.
     cascade_replan_after_failures: int = 2
     cascade_replan_max: int = 2
+    # When True, after every successful run the planner is asked whether
+    # the task pattern is worth saving as a reusable skill. Suggestions
+    # are surfaced to the bot owner via inline-keyboard.
+    cascade_auto_skill_suggest: bool = True
+    cascade_skill_suggest_cooldown_s: int = 300
     cascade_workspace_retention_days: int = 7
     cascade_db_path: Path = Field(
         default_factory=lambda: Path.home() / "claude-cascade" / "store" / "cascade.db"

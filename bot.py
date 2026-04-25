@@ -55,6 +55,9 @@ GIT_WHITELIST = {"status", "log", "diff", "branch", "checkout", "pull", "push", 
 EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"]
 REPLAN_CHOICES = [0, 1, 2, 3, 5]
 
+# Pending skill suggestion per chat: chat_id → {task_id, suggestion_dict}
+_PENDING_SKILL: dict[int, dict] = {}
+
 
 def _lang(update: Update) -> str:
     if update.effective_chat and update.effective_chat.id in _LANG_OVERRIDE:
@@ -140,9 +143,13 @@ async def _run_task_for_chat(
     status_msg = await msg.reply_text(initial)
     cancel = asyncio.Event()
 
-    state = {"last_text": initial}
+    state = {"last_text": initial, "skill_suggestion": None}
 
     async def progress(task_id: str, event: str, payload: dict) -> None:
+        # Capture skill suggestions so we can prompt the user after the run.
+        if event == "skill_suggested":
+            state["skill_suggestion"] = {"task_id": task_id, **payload}
+            return
         line = _format_progress_line(event, payload, lang)
         if not line:
             return
@@ -233,11 +240,28 @@ async def _run_task_for_chat(
     # Diff in a separate code-block message so it doesn't break parsing.
     if result.diff and result.diff.strip():
         diff_excerpt = result.diff[:3500]
-        diff_label = "Diff" if lang == "en" else "Diff"
         await msg.reply_text(
             f"```diff\n{diff_excerpt}\n```",
             parse_mode=ParseMode.MARKDOWN,
         )
+
+    # Surface auto-skill-suggestion (if any) with inline accept/reject buttons.
+    if result.status == "done" and state.get("skill_suggestion"):
+        sug = state["skill_suggestion"]
+        from cascade.skill_suggester import SkillSuggestion, format_skill_proposal
+        try:
+            sug_obj = SkillSuggestion.model_validate({k: v for k, v in sug.items() if k != "task_id"} | {"should_create": True})
+            text = format_skill_proposal(sug_obj, lang=lang)
+        except Exception:
+            text = f"💡 Skill-Vorschlag: `{sug.get('name')}`"
+        _PENDING_SKILL[chat.id] = sug
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("💾 " + ("Speichern" if lang == "de" else "Save"),
+                                 callback_data=f"sk:y:{sug['name']}"),
+            InlineKeyboardButton("❌ " + ("Verwerfen" if lang == "de" else "Discard"),
+                                 callback_data=f"sk:n:{sug['name']}"),
+        ]])
+        await msg.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
 
 def _format_progress_line(event: str, payload: dict, lang: str = "de") -> str | None:
@@ -569,6 +593,124 @@ async def on_replan_callback(update: Update, ctx) -> None:
             await store.set_chat_replan_max(chat_id, n)
             txt = f"✅ Replan-Budget = `{n}`" if lang == "de" else f"✅ Replan budget = `{n}`"
         await q.edit_message_text(txt, parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_skills(update: Update, ctx) -> None:
+    if not await _owner_only(update, ctx):
+        return
+    lang = _lang(update)
+    store: Store = ctx.application.bot_data["store"]
+    args = ctx.args or []
+    if args and args[0] == "delete" and len(args) >= 2:
+        ok = await store.delete_skill(args[1])
+        await update.effective_message.reply_text(
+            ("✅ Gelöscht." if ok else "Skill nicht gefunden.") if lang == "de"
+            else ("✅ Deleted." if ok else "Skill not found.")
+        )
+        return
+
+    skills = await store.list_skills()
+    if not skills:
+        await update.effective_message.reply_text(
+            "Keine Skills gespeichert. Sie entstehen automatisch nach erfolgreichen Runs."
+            if lang == "de" else
+            "No skills saved yet. They are auto-suggested after successful runs."
+        )
+        return
+    lines = ["*Gespeicherte Skills:*" if lang == "de" else "*Saved skills:*"]
+    for sk in skills:
+        used = sk.get("usage_count", 0)
+        lines.append(f"• `{sk['name']}` — {sk.get('description') or '—'} (× {used})")
+    lines.append("")
+    lines.append(
+        "Aufruf: `/run <name> <args>` — Platzhalter werden mit den args ersetzt."
+        if lang == "de" else
+        "Usage: `/run <name> <args>` — placeholders are replaced with args."
+    )
+    lines.append(
+        "Löschen: `/skills delete <name>`" if lang == "de" else
+        "Delete: `/skills delete <name>`"
+    )
+    await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_run_skill(update: Update, ctx) -> None:
+    if not await _owner_only(update, ctx):
+        return
+    lang = _lang(update)
+    store: Store = ctx.application.bot_data["store"]
+    args = ctx.args or []
+    if not args:
+        await update.effective_message.reply_text(
+            "Aufruf: /run <skill_name> <args …>" if lang == "de"
+            else "Usage: /run <skill_name> <args …>"
+        )
+        return
+    name = args[0]
+    sk = await store.get_skill_by_name(name)
+    if not sk:
+        await update.effective_message.reply_text(
+            f"Skill `{name}` nicht gefunden. /skills für Liste."
+            if lang == "de" else f"Skill `{name}` not found. /skills for list.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+    template = sk["task_template"]
+    params = args[1:]
+    # Two strategies: positional {0}/{1}/... AND key=value pairs.
+    text = template
+    kv = {p.split("=", 1)[0]: p.split("=", 1)[1] for p in params if "=" in p}
+    rest = [p for p in params if "=" not in p]
+    try:
+        text = template.format(*rest, **kv)
+    except (KeyError, IndexError):
+        # If formatting fails, fall back to template + free-form args appended.
+        text = template + ("\n\n" + " ".join(params) if params else "")
+    await store.increment_skill_usage(name)
+    await _run_task_for_chat(update, ctx, text)
+
+
+async def on_skill_callback(update: Update, ctx) -> None:
+    if not await _owner_only(update, ctx):
+        return
+    q = update.callback_query
+    await q.answer()
+    data = q.data or ""
+    lang = _lang(update)
+    store: Store = ctx.application.bot_data["store"]
+    chat_id = update.effective_chat.id
+
+    if data.startswith("sk:y:"):
+        name = data.split(":", 2)[2]
+        sug = _PENDING_SKILL.pop(chat_id, None)
+        if not sug or sug.get("name") != name:
+            await q.edit_message_text("⚠ Vorschlag nicht mehr verfügbar." if lang == "de" else "⚠ Suggestion no longer available.")
+            return
+        try:
+            await store.create_skill(
+                name=sug["name"],
+                description=sug.get("description"),
+                task_template=sug["task_template"],
+                rationale=sug.get("rationale"),
+                source_task_ids=[sug.get("task_id")] if sug.get("task_id") else [],
+            )
+            if sug.get("task_id"):
+                await store.mark_skill_suggestion_decided(sug["task_id"], "accepted")
+            await q.edit_message_text(
+                f"✅ Skill `{name}` gespeichert. Aufruf via `/run {name} <args>`."
+                if lang == "de" else
+                f"✅ Skill `{name}` saved. Use `/run {name} <args>`.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception as e:
+            await q.edit_message_text(f"❌ {e}")
+        return
+    if data.startswith("sk:n:"):
+        sug = _PENDING_SKILL.pop(chat_id, None)
+        if sug and sug.get("task_id"):
+            await store.mark_skill_suggestion_decided(sug["task_id"], "rejected")
+        await q.edit_message_text("Verworfen." if lang == "de" else "Discarded.")
+        return
 
 
 async def cmd_lang(update: Update, ctx) -> None:
@@ -970,9 +1112,12 @@ def main() -> None:
     app.add_handler(CommandHandler("models", cmd_models))
     app.add_handler(CommandHandler("effort", cmd_effort))
     app.add_handler(CommandHandler("replan", cmd_replan))
+    app.add_handler(CommandHandler("skills", cmd_skills))
+    app.add_handler(CommandHandler("run", cmd_run_skill))
     app.add_handler(CallbackQueryHandler(on_models_callback, pattern=r"^m:"))
     app.add_handler(CallbackQueryHandler(on_effort_callback, pattern=r"^e:"))
     app.add_handler(CallbackQueryHandler(on_replan_callback, pattern=r"^r:"))
+    app.add_handler(CallbackQueryHandler(on_skill_callback, pattern=r"^sk:"))
 
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, on_voice))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, on_photo_or_document))
