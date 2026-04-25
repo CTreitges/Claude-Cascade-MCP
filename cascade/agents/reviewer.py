@@ -43,7 +43,7 @@ def _format_check_results(results) -> str:
         tail = (out_excerpt[-3:] if out_excerpt else [])
         lines.append(
             f"{mark} {r.name} (exit={r.exit_code}, {r.duration_s:.1f}s)\n"
-            + ("\n".join(f"    | {l[:200]}" for l in tail) if tail else "")
+            + ("\n".join(f"    | {line[:200]}" for line in tail) if tail else "")
         )
     return "\n".join(lines)
 
@@ -51,8 +51,8 @@ def _format_check_results(results) -> str:
 def _build_prompt(plan: Plan, diff: str, check_results=None) -> str:
     parts = [
         f"PLAN:\nsummary: {plan.summary}",
-        f"steps:\n" + "\n".join(f"- {s}" for s in plan.steps),
-        f"acceptance_criteria:\n" + "\n".join(f"- {a}" for a in plan.acceptance_criteria),
+        "steps:\n" + "\n".join(f"- {s}" for s in plan.steps),
+        "acceptance_criteria:\n" + "\n".join(f"- {a}" for a in plan.acceptance_criteria),
     ]
     if check_results is not None:
         parts.append(f"\nQUALITY CHECK RESULTS:\n{_format_check_results(check_results)}")

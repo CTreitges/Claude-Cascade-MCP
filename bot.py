@@ -12,12 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import shlex
-import subprocess
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.constants import ChatAction, ParseMode
@@ -31,12 +28,11 @@ from telegram.ext import (
 )
 
 from cascade.config import settings
-from cascade.core import maintenance, run_cascade
+from cascade.core import run_cascade
 from cascade.i18n import t
 from cascade.models import (
     IMPLEMENTER_MODELS,
     PLANNER_REVIEWER_MODELS,
-    implementer_display,
     implementer_provider,
 )
 from cascade.store import Store
@@ -953,10 +949,10 @@ async def on_text(update: Update, ctx) -> None:
     store: Store = ctx.application.bot_data["store"]
     recent = await store.list_tasks(limit=3)
     context_lines = []
-    for t in recent:
+    for past in recent:
         files_hint = ""
         try:
-            iters = await store.list_iterations(t.id)
+            iters = await store.list_iterations(past.id)
             last = iters[-1] if iters else None
             if last and last.diff_excerpt:
                 # Pull file names from "diff --git a/X b/X" lines
@@ -967,9 +963,9 @@ async def on_text(update: Update, ctx) -> None:
         except Exception:
             pass
         context_lines.append(
-            f"- task_id={t.id} status={t.status} iter={t.iteration} "
-            f"workspace={t.workspace_path or '—'} summary={(t.result_summary or '—')[:120]} "
-            f"task={(t.task_text or '')[:140]}{files_hint}"
+            f"- task_id={past.id} status={past.status} iter={past.iteration} "
+            f"workspace={past.workspace_path or '—'} summary={(past.result_summary or '—')[:120]} "
+            f"task={(past.task_text or '')[:140]}{files_hint}"
         )
     context = "\n".join(context_lines) if context_lines else None
 

@@ -8,7 +8,6 @@ import pytest
 from cascade.workspace import (
     FileOp,
     Workspace,
-    WorkspaceError,
     cleanup_old_workspaces,
 )
 

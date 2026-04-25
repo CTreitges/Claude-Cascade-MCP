@@ -72,7 +72,7 @@ async def test_claude_call_includes_effort_flag(monkeypatch):
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create)
 
-    res = await mod.claude_call(
+    await mod.claude_call(
         prompt="hi", model="claude-sonnet-4-6", output_json=True, effort="high"
     )
     assert "--effort" in captured["args"]

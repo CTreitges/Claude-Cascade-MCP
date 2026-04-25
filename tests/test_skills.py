@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from cascade.config import Settings
-from cascade.skill_suggester import SkillSuggestion, maybe_suggest_skill
 from cascade.store import Store
 
 
@@ -154,7 +153,10 @@ async def test_suggester_returns_none_when_should_create_false(monkeypatch) -> N
 
     class T:
         def __init__(self, tid, text):
-            self.id = tid; self.task_text = text; self.status = "done"; self.created_at = 0
+            self.id = tid
+            self.task_text = text
+            self.status = "done"
+            self.created_at = 0
 
     sug = await mod.maybe_suggest_skill(
         current_task=T("c", "x"),
@@ -182,7 +184,10 @@ async def test_suggester_returns_suggestion_on_pattern(monkeypatch) -> None:
 
     class T:
         def __init__(self, tid, text):
-            self.id = tid; self.task_text = text; self.status = "done"; self.created_at = 0
+            self.id = tid
+            self.task_text = text
+            self.status = "done"
+            self.created_at = 0
 
     sug = await mod.maybe_suggest_skill(
         current_task=T("c", "Erstelle pytest für foo.py"),

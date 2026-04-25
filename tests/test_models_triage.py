@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pytest
 
 from cascade.config import Settings
 from cascade.models import (

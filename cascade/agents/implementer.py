@@ -51,10 +51,10 @@ def _build_user_message(
     parts = [
         f"ITERATION: {iteration}",
         f"\nPLAN SUMMARY:\n{plan.summary}",
-        f"\nSTEPS:\n" + "\n".join(f"- {s}" for s in plan.steps),
-        f"\nFILES TO TOUCH:\n" + "\n".join(f"- {p}" for p in plan.files_to_touch),
-        f"\nACCEPTANCE CRITERIA:\n" + "\n".join(f"- {a}" for a in plan.acceptance_criteria),
-        f"\nCURRENT WORKSPACE FILES:\n"
+        "\nSTEPS:\n" + "\n".join(f"- {s}" for s in plan.steps),
+        "\nFILES TO TOUCH:\n" + "\n".join(f"- {p}" for p in plan.files_to_touch),
+        "\nACCEPTANCE CRITERIA:\n" + "\n".join(f"- {a}" for a in plan.acceptance_criteria),
+        "\nCURRENT WORKSPACE FILES:\n"
         + ("\n".join(f"- {f}" for f in workspace_files) if workspace_files else "(empty)"),
     ]
     if file_contents:

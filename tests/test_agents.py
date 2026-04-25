@@ -5,7 +5,6 @@ import pytest
 from cascade.agents.implementer import ImplementerOutput, _coerce
 from cascade.agents.planner import Plan
 from cascade.agents.reviewer import ReviewResult
-from cascade.workspace import FileOp
 
 
 def test_plan_validates_minimal():

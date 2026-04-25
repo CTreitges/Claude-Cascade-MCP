@@ -3,11 +3,9 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-import pytest
 
 from cascade.agents.planner import Plan, RepoHint
 from cascade.repo_resolver import (
-    ResolvedRepo,
     discover_local_repos,
     repos_for_planner_prompt,
     resolve_repo,

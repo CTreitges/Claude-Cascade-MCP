@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from cascade.agents.implementer import ImplementerOutput
-from cascade.agents.planner import Plan, RepoHint
+from cascade.agents.planner import Plan
 from cascade.agents.reviewer import ReviewResult
 from cascade.config import Settings
 from cascade.core import run_cascade

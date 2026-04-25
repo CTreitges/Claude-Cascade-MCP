@@ -19,7 +19,7 @@ from .config import Settings, settings
 from .memory import recall_context, remember_finding
 from .repo_resolver import discover_local_repos, repos_for_planner_prompt, resolve_repo
 from .skill_suggester import maybe_suggest_skill
-from .store import Store, Task
+from .store import Store
 from .workspace import Workspace, cleanup_old_workspaces
 
 log = logging.getLogger("cascade")
@@ -95,12 +95,18 @@ async def run_cascade(
     """
     s = s or settings()
     overrides: dict = {}
-    if planner_model: overrides["cascade_planner_model"] = planner_model
-    if reviewer_model: overrides["cascade_reviewer_model"] = reviewer_model
-    if planner_effort: overrides["cascade_planner_effort"] = planner_effort
-    if reviewer_effort: overrides["cascade_reviewer_effort"] = reviewer_effort
-    if triage_effort: overrides["cascade_triage_effort"] = triage_effort
-    if replan_max is not None: overrides["cascade_replan_max"] = replan_max
+    if planner_model:
+        overrides["cascade_planner_model"] = planner_model
+    if reviewer_model:
+        overrides["cascade_reviewer_model"] = reviewer_model
+    if planner_effort:
+        overrides["cascade_planner_effort"] = planner_effort
+    if reviewer_effort:
+        overrides["cascade_reviewer_effort"] = reviewer_effort
+    if triage_effort:
+        overrides["cascade_triage_effort"] = triage_effort
+    if replan_max is not None:
+        overrides["cascade_replan_max"] = replan_max
     if overrides:
         s = s.model_copy(update=overrides)
     cancel_event = cancel_event or asyncio.Event()
@@ -198,7 +204,6 @@ async def run_cascade(
 
         # Loop
         last_review: ReviewResult | None = None
-        last_check_results: list = []
         feedback: str | None = None
         consecutive_failures = 0
         replans_done = 0
@@ -289,8 +294,6 @@ async def run_cascade(
                         f"{review.feedback or ''}"
                     ).strip(),
                 })
-
-            last_check_results = check_results
 
             await store.record_iteration(
                 task_id,
@@ -474,7 +477,7 @@ def _build_replan_feedback(prev_plan: Plan, iter_history: list) -> str:
         f"  steps: {prev_plan.steps}",
         f"  files_to_touch: {prev_plan.files_to_touch}",
         f"  acceptance_criteria: {prev_plan.acceptance_criteria}",
-        f"  quality_checks:",
+        "  quality_checks:",
     ]
     for qc in prev_plan.quality_checks:
         lines.append(f"    - name={qc.name!r} command={qc.command!r}")
