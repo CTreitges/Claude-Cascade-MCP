@@ -161,7 +161,15 @@ async def _run_task_for_chat(
     status_msg = await msg.reply_text(initial)
     cancel = asyncio.Event()
 
-    state = {"lines": [initial], "skill_suggestion": None}
+    state = {
+        "lines": [initial],
+        "skill_suggestion": None,
+        "current_phase": initial,   # what we're showing as the trailing heartbeat target
+        "started_at": asyncio.get_event_loop().time(),
+    }
+
+    def _render() -> str:
+        return "\n".join(state["lines"])
 
     async def progress(task_id: str, event: str, payload: dict) -> None:
         # Capture skill suggestions so we can prompt the user after the run.
@@ -173,10 +181,11 @@ async def _run_task_for_chat(
             return
         # Keep header + last 8 events so the message stays readable on phones.
         state["lines"].append(line)
+        state["current_phase"] = line
         if len(state["lines"]) > 9:  # 1 header + 8 events
             state["lines"] = [state["lines"][0], "  …"] + state["lines"][-7:]
         try:
-            await status_msg.edit_text("\n".join(state["lines"]))
+            await status_msg.edit_text(_render())
         except Exception:
             pass
 
@@ -214,6 +223,34 @@ async def _run_task_for_chat(
 
     asyncio.create_task(register_when_known())
 
+    # Heartbeat: edit the status message every 30s with an elapsed-time tag
+    # so the user knows the bot is still alive during long Ollama / claude calls.
+    async def _heartbeat() -> None:
+        spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        i = 0
+        while not task_obj.done():
+            await asyncio.sleep(30)
+            if task_obj.done():
+                return
+            elapsed = int(asyncio.get_event_loop().time() - state["started_at"])
+            mark = spinner[i % len(spinner)]
+            i += 1
+            label = "läuft" if lang == "de" else "running"
+            tag = f"  {mark} {label} {elapsed}s"
+            try:
+                await ctx.bot.send_chat_action(chat.id, ChatAction.TYPING)
+                # Replace the trailing heartbeat line if present, else append.
+                lines = state["lines"]
+                if lines and lines[-1].startswith("  ⠋") or (lines and lines[-1].startswith("  ⠙")) or any(lines[-1].startswith(f"  {s}") for s in spinner):
+                    lines[-1] = tag
+                else:
+                    lines.append(tag)
+                await status_msg.edit_text(_render())
+            except Exception:
+                pass
+
+    hb_task = asyncio.create_task(_heartbeat())
+
     try:
         await ctx.bot.send_chat_action(chat.id, ChatAction.TYPING)
         result = await task_obj
@@ -224,6 +261,11 @@ async def _run_task_for_chat(
         await msg.reply_text(t("result.crashed", lang=lang, error=str(e)))
         return
     finally:
+        hb_task.cancel()
+        try:
+            await hb_task
+        except (asyncio.CancelledError, Exception):
+            pass
         _INFLIGHT.pop(chat.id, None)
 
     # Rich final report: status header + plan summary + changed files + diff excerpt
@@ -536,6 +578,105 @@ async def cmd_abort(update: Update, ctx) -> None:
         f"🚫 {n} Task(s) abgebrochen." if lang == "de"
         else f"🚫 Aborted {n} task(s)."
     )
+
+
+async def cmd_projects(update: Update, ctx) -> None:
+    """List local projects/repos so the user can clean up."""
+    if not await _owner_only(update, ctx):
+        return
+    lang = _lang(update)
+    args = ctx.args or []
+
+    from cascade.repo_resolver import discover_local_repos
+    import shutil
+
+    if args and args[0] == "delete" and len(args) >= 2:
+        target = Path(args[1]).expanduser().resolve()
+        # Hard safety: only allow deletion of dirs inside ~/projekte / ~/repos /
+        # ~/code / ~/dev / ~/claude-cascade/workspaces. Never anywhere else.
+        home = Path.home()
+        allowed_roots = [
+            home / "projekte", home / "repos", home / "code", home / "dev",
+            home / "claude-cascade" / "workspaces",
+            Path("/tmp"),
+        ]
+        ok = any(target.is_relative_to(r) for r in allowed_roots if r.exists())
+        if not ok:
+            await update.effective_message.reply_text(
+                f"⛔ Pfad nicht in erlaubten Wurzeln: `{target}`" if lang == "de"
+                else f"⛔ Path outside allowed roots: `{target}`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        if not target.exists():
+            await update.effective_message.reply_text(
+                f"❓ Pfad existiert nicht: `{target}`" if lang == "de"
+                else f"❓ Path does not exist: `{target}`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        try:
+            shutil.rmtree(target)
+            await update.effective_message.reply_text(
+                f"🗑 Gelöscht: `{target}`" if lang == "de"
+                else f"🗑 Deleted: `{target}`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception as e:
+            await update.effective_message.reply_text(f"❌ {e}")
+        return
+
+    repos = await asyncio.to_thread(discover_local_repos)
+    home = Path.home()
+
+    # Also list cascade workspaces (transient artifacts) and /tmp/cascade-*
+    s = settings()
+    extras: list[Path] = []
+    if s.workspaces_dir.exists():
+        extras.extend(p for p in s.workspaces_dir.iterdir() if p.is_dir())
+    for tmp_dir in Path("/tmp").glob("cascade-*"):
+        if tmp_dir.is_dir():
+            extras.append(tmp_dir)
+
+    def _size_mb(p: Path) -> str:
+        try:
+            total = sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+            return f"{total / 1024 / 1024:.1f}MB"
+        except Exception:
+            return "?"
+
+    head = "📂 *Projekte & Workspaces*\n" if lang == "de" else "📂 *Projects & workspaces*\n"
+    parts = [head]
+
+    if repos:
+        parts.append("\n*Git-Repos:*" if lang == "de" else "\n*Git repos:*")
+        for r in repos[:30]:
+            try:
+                rel = r.relative_to(home)
+                shown = f"~/{rel}"
+            except ValueError:
+                shown = str(r)
+            parts.append(f"  • `{shown}` ({_size_mb(r)})")
+
+    if extras:
+        parts.append(
+            "\n*Workspaces & /tmp:*" if lang == "de" else "\n*Workspaces & /tmp:*"
+        )
+        for p in sorted(extras)[:20]:
+            parts.append(f"  • `{p}` ({_size_mb(p)})")
+
+    parts.append(
+        "\nLöschen mit: `/projects delete <pfad>`" if lang == "de"
+        else "\nDelete with: `/projects delete <path>`"
+    )
+    parts.append(
+        "(erlaubt nur ~/projekte, ~/repos, ~/code, ~/dev, ~/claude-cascade/workspaces, /tmp)"
+    )
+
+    text = "\n".join(parts)
+    if len(text) > 3800:
+        text = text[:3800] + "…"
+    await update.effective_message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 
 async def cmd_dryrun(update: Update, ctx) -> None:
@@ -1044,6 +1185,12 @@ async def on_skill_callback(update: Update, ctx) -> None:
             )
             if sug.get("task_id"):
                 await store.mark_skill_suggestion_decided(sug["task_id"], "accepted")
+            from cascade.memory import remember_decision
+            await remember_decision(
+                f"New skill saved: '{name}' — {sug.get('description') or ''}. "
+                f"Template: {sug.get('task_template', '')[:200]}",
+                importance="high", tags="claude-cascade,skill,user-accepted",
+            )
             await q.edit_message_text(
                 f"✅ Skill `{name}` gespeichert. Aufruf via `/run {name} <args>`."
                 if lang == "de" else
@@ -1455,6 +1602,7 @@ def main() -> None:
     app.add_handler(CommandHandler("queue", cmd_queue))
     app.add_handler(CommandHandler("abort", cmd_abort))
     app.add_handler(CommandHandler("dryrun", cmd_dryrun))
+    app.add_handler(CommandHandler("projects", cmd_projects))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("logs", cmd_logs))
     app.add_handler(CommandHandler("cancel", cmd_cancel))

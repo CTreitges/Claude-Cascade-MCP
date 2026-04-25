@@ -63,7 +63,7 @@ async def test_claude_call_includes_effort_flag(monkeypatch):
 
     class FakeProc:
         returncode = 0
-        async def communicate(self):
+        async def communicate(self, input=None):
             return (b'{"result":"{\\"ok\\":true}","total_cost_usd":0.001}', b"")
 
     async def fake_create(*args, **_kw):
@@ -90,7 +90,8 @@ async def test_claude_call_omits_effort_when_none(monkeypatch):
 
     class FakeProc:
         returncode = 0
-        async def communicate(self):
+        async def communicate(self, input=None):
+            captured["stdin"] = input
             return (b'{"result":""}', b"")
 
     async def fake_create(*args, **_kw):

@@ -67,10 +67,14 @@ async def claude_call(
         args += extra_flags
 
     full_prompt = prompt + _attachments_block(attachments or [])
-    args.append(full_prompt)
 
-    # `CLAUDE_CODE_SIMPLE=1` is the env equivalent of `--bare` and blocks keychain auth.
-    # Only set it when bare=True; otherwise keep the inherited environment intact so OAuth works.
+    # Pipe the prompt via stdin instead of argv to dodge Linux ARG_MAX
+    # (~128 KB). Reviewer calls in particular can carry a 100+ KB diff.
+    # `claude -p` accepts the prompt either as positional arg or stdin.
+    use_stdin = len(full_prompt) > 8000 or len(system_prompt or "") > 8000
+    if not use_stdin:
+        args.append(full_prompt)
+
     env = {**os.environ}
     if bare:
         env["CLAUDE_CODE_SIMPLE"] = "1"
@@ -81,18 +85,26 @@ async def claude_call(
     try:
         proc = await asyncio.create_subprocess_exec(
             *args,
+            stdin=asyncio.subprocess.PIPE if use_stdin else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
+        stdin_input = full_prompt.encode("utf-8") if use_stdin else None
         try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+            stdout_b, stderr_b = await asyncio.wait_for(
+                proc.communicate(input=stdin_input), timeout=timeout_s
+            )
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
             raise ClaudeCliError(f"claude -p timed out after {timeout_s}s")
     except FileNotFoundError as e:
         raise ClaudeCliError(f"`claude` CLI not found: {e}") from e
+    except OSError as e:
+        # E2BIG (argument list too long) shouldn't happen anymore thanks to
+        # the stdin fallback above, but keep a clear error if it ever does.
+        raise ClaudeCliError(f"claude -p subprocess spawn failed: {e}") from e
 
     duration = asyncio.get_event_loop().time() - started
     stdout = stdout_b.decode("utf-8", errors="replace")

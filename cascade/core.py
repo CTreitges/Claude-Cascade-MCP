@@ -16,7 +16,7 @@ from .agents.implementer import ImplementerOutput, call_implementer
 from .agents.planner import Plan, call_planner
 from .agents.reviewer import ReviewResult, call_reviewer
 from .config import Settings, settings
-from .memory import recall_context, remember_finding
+from .memory import recall_context, remember_decision, remember_finding
 from .repo_resolver import discover_local_repos, repos_for_planner_prompt, resolve_repo
 from .skill_suggester import maybe_suggest_skill
 from .store import Store
@@ -334,11 +334,17 @@ async def run_cascade(
                 )
                 await _emit(progress, store, task_id, "done", {"summary": summary})
 
-                # RLM remember if reviewer flagged something noteworthy
-                if review.severity in ("medium", "high"):
-                    await remember_finding(
-                        f"Cascade task '{task[:80]}': {review.feedback or 'completed cleanly'}"
-                    )
+                # Always record successful runs in memory — workspace + files
+                # are the durable artifacts that future runs may want to reuse.
+                await remember_finding(
+                    f"Task done: '{task[:120]}' → workspace={ws.root}, "
+                    f"iters={iter_n}, files={len(ws.list_files())}, "
+                    f"plan_summary={(plan.summary or '')[:200]}",
+                    category="finding",
+                    importance="medium" if review.severity == "low" else "high",
+                    tags=f"claude-cascade,task,{source}",
+                    extra={"task_id": task_id, "review_severity": review.severity},
+                )
 
                 # Auto-skill suggestion (best-effort, non-blocking on failure).
                 if s.cascade_auto_skill_suggest:
@@ -439,6 +445,13 @@ async def run_cascade(
                         store, task_id, "info",
                         f"replanned after iter {iter_n} (replans_done={replans_done})",
                     )
+                    await remember_decision(
+                        f"Cascade replanned after iter {iter_n}: '{task[:80]}'. "
+                        f"new plan: {plan.summary[:150]}",
+                        importance="medium",
+                        tags="claude-cascade,replan",
+                        extra={"task_id": task_id},
+                    )
                 except Exception as e:
                     await _log(store, task_id, "warn", f"replan failed, continuing with old plan: {e}")
 
@@ -446,6 +459,13 @@ async def run_cascade(
         summary = f"failed after {s.cascade_max_iterations} iterations"
         await store.update_task(
             task_id, status="failed", result_summary=summary, completed=True
+        )
+        await remember_finding(
+            f"Task FAILED after max iters: '{task[:120]}'. "
+            f"last review: {(last_review.feedback if last_review else '—')[:200]}",
+            category="finding", importance="high",
+            tags=f"claude-cascade,task,failure,{source}",
+            extra={"task_id": task_id},
         )
         await _emit(progress, store, task_id, "failed", {"summary": summary})
         return CascadeResult(

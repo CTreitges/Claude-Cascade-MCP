@@ -81,9 +81,19 @@ async def _ollama_chat(
 ) -> LLMReply:
     import ollama
 
+    from .models import implementer_ctx
+
     headers: dict[str, str] = {}
     if s.ollama_cloud_api_key:
         headers["Authorization"] = f"Bearer {s.ollama_cloud_api_key}"
+
+    # num_ctx: target the model's max context window. Ollama clamps it
+    # automatically if we over-shoot. Big context matters for the implementer
+    # because we feed it FULL existing-file contents + plan + reviewer feedback.
+    options = {
+        "temperature": 0.2,
+        "num_ctx": implementer_ctx(model),
+    }
 
     client = ollama.AsyncClient(host=s.ollama_cloud_host, headers=headers, timeout=timeout_s)
     try:
@@ -91,7 +101,7 @@ async def _ollama_chat(
             model=model,
             messages=messages,
             format="json",
-            options={"temperature": 0.2},
+            options=options,
         )
     except Exception as e:
         raise LLMClientError(f"Ollama Cloud call failed: {e}") from e
