@@ -69,7 +69,7 @@ def test_implementer_output_files_pass_through_to_workspace_validation():
 def test_planner_prompt_includes_schema():
     from cascade.agents.planner import _build_prompt
 
-    out = _build_prompt("do something", recall_context=None)
+    out = _build_prompt("do something", recall_context=None, repo_candidates_block=None)
     assert "TASK:" in out
     assert "files_to_touch" in out
 
@@ -77,9 +77,20 @@ def test_planner_prompt_includes_schema():
 def test_planner_prompt_with_recall():
     from cascade.agents.planner import _build_prompt
 
-    out = _build_prompt("do something", recall_context="old finding")
+    out = _build_prompt("do something", recall_context="old finding", repo_candidates_block=None)
     assert "RELEVANT MEMORIES" in out
     assert "old finding" in out
+
+
+def test_planner_prompt_with_repo_candidates():
+    from cascade.agents.planner import _build_prompt
+
+    out = _build_prompt(
+        "do something",
+        recall_context=None,
+        repo_candidates_block="Locally available git repos:\n- /home/x/myrepo",
+    )
+    assert "/home/x/myrepo" in out
 
 
 def test_reviewer_prompt_with_empty_diff():

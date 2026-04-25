@@ -17,6 +17,7 @@ from .agents.planner import Plan, call_planner
 from .agents.reviewer import ReviewResult, call_reviewer
 from .config import Settings, settings
 from .memory import recall_context, remember_finding
+from .repo_resolver import discover_local_repos, repos_for_planner_prompt, resolve_repo
 from .store import Store, Task
 from .workspace import Workspace, cleanup_old_workspaces
 
@@ -120,36 +121,72 @@ async def run_cascade(
 
         await _emit(progress, store, task_id, "started", {"task": task})
 
-        # Workspace
-        if repo:
-            ws = Workspace.attach(Path(repo))
-            await _log(store, task_id, "warn", f"running against existing repo: {repo}")
-        else:
-            ws = Workspace.create(s.workspaces_dir, task_id=task_id)
-        await store.update_task(task_id, workspace_path=str(ws.root), status="running")
-
         # Recall context (best-effort)
         recall = await recall_context(task)
         if recall:
             await _log(store, task_id, "info", f"recall: {recall[:200]}…")
+
+        # Discover local repos so the planner can refer to them by absolute path.
+        # Only relevant when the caller didn't pin a repo themselves.
+        repo_candidates_block: str | None = None
+        if repo is None:
+            try:
+                local_repos = await asyncio.to_thread(discover_local_repos)
+                if local_repos:
+                    repo_candidates_block = repos_for_planner_prompt(local_repos, task)
+                    await _log(
+                        store, task_id, "info",
+                        f"discovered {len(local_repos)} local repos for planner",
+                    )
+            except Exception as e:
+                await _log(store, task_id, "warn", f"repo discovery failed: {e}")
 
         await _check_cancel(cancel_event, store, task_id)
 
         # Plan
         await _emit(progress, store, task_id, "planning", {})
         try:
+            # Workspace doesn't exist yet at planning time — create a placeholder
+            # path only for error-reporting purposes if the planner itself fails.
+            placeholder_root = s.workspaces_dir / task_id
             plan = await call_planner(
-                task, attachments=attachments, recall_context=recall, s=s
+                task,
+                attachments=attachments,
+                recall_context=recall,
+                repo_candidates_block=repo_candidates_block,
+                s=s,
             )
         except Exception as e:
-            return await _fail(store, task_id, ws, "planner failed", e, progress)
+            # Need a Workspace for the failure path's CascadeResult — make a tmp one.
+            placeholder_root.mkdir(parents=True, exist_ok=True)
+            ws_err = Workspace(placeholder_root)
+            return await _fail(store, task_id, ws_err, "planner failed", e, progress)
+
+        # Resolve workspace based on caller's --repo (highest priority) or planner's hint.
+        if repo:
+            ws = Workspace.attach(Path(repo))
+            await _log(store, task_id, "warn", f"using caller-pinned repo: {repo}")
+        else:
+            resolved = await resolve_repo(
+                plan.repo, workspaces_root=s.workspaces_dir, task_id=task_id
+            )
+            await _log(
+                store, task_id, "info",
+                f"repo resolution: source={resolved.source} path={resolved.path} note={resolved.note}",
+            )
+            if resolved.path is not None:
+                ws = Workspace.attach(resolved.path)
+            else:
+                ws = Workspace.create(s.workspaces_dir, task_id=task_id)
+        await store.update_task(task_id, workspace_path=str(ws.root), status="running")
+
         await store.record_iteration(task_id, 0, implementer_output=plan.model_dump_json())
         await _emit(
             progress,
             store,
             task_id,
             "planned",
-            {"summary": plan.summary, "steps": plan.steps},
+            {"summary": plan.summary, "steps": plan.steps, "repo": plan.repo.model_dump()},
         )
 
         # Loop
