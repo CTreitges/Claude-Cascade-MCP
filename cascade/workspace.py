@@ -170,6 +170,81 @@ class Workspace:
         out = self._git(["ls-files"]).stdout
         return [line for line in out.splitlines() if line]
 
+    def read_files(
+        self,
+        paths: list[str],
+        *,
+        max_bytes: int = 60_000,
+        max_per_file: int = 20_000,
+    ) -> dict[str, str]:
+        """Read a curated set of workspace files into memory, with sandboxing
+        and a total-byte budget. Truncates per-file and bails out when the
+        global budget is exhausted so the implementer prompt stays bounded.
+        """
+        out: dict[str, str] = {}
+        used = 0
+        for rel in paths:
+            if used >= max_bytes:
+                break
+            try:
+                p = self._safe_path(rel)
+            except WorkspaceError:
+                continue
+            if not p.is_file():
+                continue
+            try:
+                content = p.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+            # per-file truncation
+            if len(content) > max_per_file:
+                content = content[:max_per_file] + f"\n…(truncated, +{len(content) - max_per_file} chars)"
+            # global budget
+            if used + len(content) > max_bytes:
+                budget_left = max_bytes - used
+                content = content[:budget_left] + "\n…(truncated, global budget exhausted)"
+            out[rel] = content
+            used += len(content)
+        return out
+
+    def candidate_context_files(self, hints: list[str], limit: int = 12) -> list[str]:
+        """Pick the most relevant files for an implementer call.
+
+        Strategy:
+        1. Files explicitly named in the plan that exist in the workspace.
+        2. Plain-text files in the workspace whose name matches any hint
+           (basename match), to catch typos like "config" vs "config.py".
+        3. Top-level Python/markdown files as a generic fallback.
+
+        Caps at `limit` so the prompt stays bounded.
+        """
+        all_files = set(self.list_files())
+        picked: list[str] = []
+        seen: set[str] = set()
+
+        def take(p: str) -> None:
+            if p in seen or p not in all_files:
+                return
+            seen.add(p)
+            picked.append(p)
+
+        # 1) exact hits from the plan
+        for h in hints:
+            take(h)
+            if len(picked) >= limit:
+                return picked
+
+        # 2) basename matches
+        if len(picked) < limit:
+            hint_bases = {h.split("/")[-1].lower() for h in hints}
+            for f in sorted(all_files):
+                if f.split("/")[-1].lower() in hint_bases:
+                    take(f)
+                    if len(picked) >= limit:
+                        return picked
+
+        return picked
+
 
 # ---------- async maintenance ----------
 

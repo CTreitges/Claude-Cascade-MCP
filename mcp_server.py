@@ -41,20 +41,19 @@ async def run_cascade_tool(
 ) -> dict:
     """Run a Plan→Implement→Review cascade. sync=True blocks until done or timeout."""
     s = settings()
-    cancel = asyncio.Event()
-
-    coro = run_cascade(
-        task=task,
-        source="mcp",
-        repo=Path(repo) if repo else None,
-        implementer_model=implementer_model,
-        implementer_provider=implementer_provider,
-        implementer_tools=implementer_tools,
-        s=s,
-        cancel_event=cancel,
-    )
 
     if sync:
+        cancel = asyncio.Event()
+        coro = run_cascade(
+            task=task,
+            source="mcp",
+            repo=Path(repo) if repo else None,
+            implementer_model=implementer_model,
+            implementer_provider=implementer_provider,
+            implementer_tools=implementer_tools,
+            s=s,
+            cancel_event=cancel,
+        )
         try:
             result = await asyncio.wait_for(coro, timeout=timeout_s)
         except asyncio.TimeoutError:
@@ -62,11 +61,9 @@ async def run_cascade_tool(
             return {"status": "timeout", "summary": f"Exceeded {timeout_s}s"}
         return _result_dict(result)
 
-    # async path: kick off and return id immediately
-    task_obj = asyncio.create_task(coro)
-
-    # We don't have task_id until the coro runs; bridge via a small wrapper.
-    # Easier: create task row eagerly here, then pass resume_task_id.
+    # Async path: eagerly create the DB row so the caller gets a stable task_id
+    # before any work starts. Then launch run_cascade with resume_task_id so it
+    # picks up our pre-created row instead of inserting a duplicate.
     store = await Store.open(s.cascade_db_path)
     try:
         tid = await store.create_task(
@@ -78,8 +75,7 @@ async def run_cascade_tool(
         )
     finally:
         await store.close()
-    # Replace the task with one that uses the pre-created id
-    task_obj.cancel()
+
     cancel = asyncio.Event()
     task_obj = asyncio.create_task(
         run_cascade(

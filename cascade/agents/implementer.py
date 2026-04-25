@@ -46,6 +46,7 @@ def _build_user_message(
     workspace_files: list[str],
     feedback: str | None,
     iteration: int,
+    file_contents: dict[str, str] | None = None,
 ) -> str:
     parts = [
         f"ITERATION: {iteration}",
@@ -56,6 +57,13 @@ def _build_user_message(
         f"\nCURRENT WORKSPACE FILES:\n"
         + ("\n".join(f"- {f}" for f in workspace_files) if workspace_files else "(empty)"),
     ]
+    if file_contents:
+        parts.append(
+            "\nEXISTING FILE CONTENTS (read-only context — these files already exist "
+            "in the workspace; modify them via op=edit/write or use them as reference):"
+        )
+        for path, body in file_contents.items():
+            parts.append(f"\n--- BEGIN {path} ---\n{body}\n--- END {path} ---")
     if feedback:
         parts.append(f"\nREVIEWER FEEDBACK FROM PREVIOUS ITERATION (must address):\n{feedback}")
     parts.append("\nRespond with a single JSON object matching the declared schema.")
@@ -71,6 +79,7 @@ async def call_implementer(
     model: str | None = None,
     provider: str | None = None,
     s: Settings | None = None,
+    file_contents: dict[str, str] | None = None,
 ) -> ImplementerOutput:
     s = s or settings()
     user = _build_user_message(
@@ -78,6 +87,7 @@ async def call_implementer(
         workspace_files=workspace_files,
         feedback=feedback,
         iteration=iteration,
+        file_contents=file_contents,
     )
     reply = await implementer_chat(
         system=IMPLEMENTER_SYSTEM,

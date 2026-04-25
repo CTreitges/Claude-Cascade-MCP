@@ -162,15 +162,22 @@ async def run_cascade(
 
             # Implementer
             await _emit(progress, store, task_id, "implementing", {"iteration": iter_n})
+            ws_files = ws.list_files()
+            # Auto-load file contents for read-only context. Without this the
+            # implementer is blind to existing code and can only do greenfield
+            # writes — useless for "analyse this repo" or "fix bug in foo.py".
+            ctx_files = ws.candidate_context_files(plan.files_to_touch, limit=12)
+            file_contents = ws.read_files(ctx_files) if ctx_files else {}
             try:
                 impl: ImplementerOutput = await call_implementer(
                     plan,
-                    workspace_files=ws.list_files(),
+                    workspace_files=ws_files,
                     feedback=feedback,
                     iteration=iter_n,
                     model=implementer_model,
                     provider=implementer_provider,
                     s=s,
+                    file_contents=file_contents,
                 )
             except Exception as e:
                 return await _fail(store, task_id, ws, f"implementer iter {iter_n}", e, progress)
