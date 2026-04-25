@@ -1,0 +1,17 @@
+[Unit]
+Description=Claude-Cascade Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/claude-cascade
+EnvironmentFile=%h/claude-cascade/.env
+ExecStart=%h/claude-cascade/.venv/bin/python %h/claude-cascade/bot.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
