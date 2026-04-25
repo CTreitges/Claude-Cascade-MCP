@@ -244,33 +244,38 @@ async def cmd_models(update: Update, ctx) -> None:
     cur_impl = sess.get("implementer_model") or s.cascade_implementer_model
     cur_rev = sess.get("reviewer_model") or s.cascade_reviewer_model
 
+    text, kb = _models_main_view(lang, cur_plan, cur_impl, cur_rev)
+    await update.effective_message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+
+def _models_main_view(lang: str, cur_plan: str, cur_impl: str, cur_rev: str):
     if lang == "de":
-        header = (
+        text = (
             "*Aktuelle Modell-Auswahl:*\n"
             f"• Planner:     `{cur_plan}`\n"
             f"• Implementer: `{cur_impl}`\n"
             f"• Reviewer:    `{cur_rev}`\n\n"
             "Welchen Worker willst du ändern?"
         )
-        labels = {"planner": "🧠 Planner", "implementer": "🛠 Implementer", "reviewer": "🔍 Reviewer"}
+        close = "✖ Schliessen"
     else:
-        header = (
+        text = (
             "*Current model selection:*\n"
             f"• Planner:     `{cur_plan}`\n"
             f"• Implementer: `{cur_impl}`\n"
             f"• Reviewer:    `{cur_rev}`\n\n"
             "Which worker do you want to change?"
         )
-        labels = {"planner": "🧠 Planner", "implementer": "🛠 Implementer", "reviewer": "🔍 Reviewer"}
-
+        close = "✖ Close"
     kb = InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton(labels["planner"], callback_data="m:w:planner")],
-            [InlineKeyboardButton(labels["implementer"], callback_data="m:w:implementer")],
-            [InlineKeyboardButton(labels["reviewer"], callback_data="m:w:reviewer")],
+            [InlineKeyboardButton("🧠 Planner", callback_data="m:w:planner")],
+            [InlineKeyboardButton("🛠 Implementer", callback_data="m:w:implementer")],
+            [InlineKeyboardButton("🔍 Reviewer", callback_data="m:w:reviewer")],
+            [InlineKeyboardButton(close, callback_data="m:close")],
         ]
     )
-    await update.effective_message.reply_text(header, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+    return text, kb
 
 
 async def on_models_callback(update: Update, ctx) -> None:
@@ -283,19 +288,36 @@ async def on_models_callback(update: Update, ctx) -> None:
     store: Store = ctx.application.bot_data["store"]
     chat_id = update.effective_chat.id
 
+    if data == "m:back":
+        sess = await store.get_chat_session(chat_id) or {}
+        s = settings()
+        text, kb = _models_main_view(
+            lang,
+            sess.get("planner_model") or s.cascade_planner_model,
+            sess.get("implementer_model") or s.cascade_implementer_model,
+            sess.get("reviewer_model") or s.cascade_reviewer_model,
+        )
+        await q.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+        return
+
+    if data == "m:close":
+        await q.edit_message_text("✓" if lang == "en" else "✓ Geschlossen.")
+        return
+
     if data.startswith("m:w:"):
         worker = data.split(":", 2)[2]
         if worker == "implementer":
-            choices = list(IMPLEMENTER_MODELS.items())  # [(tag,(display,provider)), …]
             buttons = [
                 [InlineKeyboardButton(display, callback_data=f"m:s:{worker}:{tag}")]
-                for tag, (display, _prov) in choices
+                for tag, (display, _prov) in IMPLEMENTER_MODELS.items()
             ]
         else:
             buttons = [
                 [InlineKeyboardButton(display, callback_data=f"m:s:{worker}:{tag}")]
                 for tag, display in PLANNER_REVIEWER_MODELS.items()
             ]
+        back_label = "← Zurück" if lang == "de" else "← Back"
+        buttons.append([InlineKeyboardButton(back_label, callback_data="m:back")])
         prompt = (
             f"Modell für *{worker}* wählen:" if lang == "de" else f"Pick model for *{worker}*:"
         )
@@ -305,10 +327,21 @@ async def on_models_callback(update: Update, ctx) -> None:
     if data.startswith("m:s:"):
         _, _, worker, tag = data.split(":", 3)
         await store.set_chat_model(chat_id, worker, tag)
-        confirm = (
-            f"✅ {worker} → `{tag}`" if lang == "de" else f"✅ {worker} → `{tag}`"
+        # After selection: confirm + offer "back to main" so user can keep tweaking.
+        sess = await store.get_chat_session(chat_id) or {}
+        s = settings()
+        text, kb = _models_main_view(
+            lang,
+            sess.get("planner_model") or s.cascade_planner_model,
+            sess.get("implementer_model") or s.cascade_implementer_model,
+            sess.get("reviewer_model") or s.cascade_reviewer_model,
         )
-        await q.edit_message_text(confirm, parse_mode=ParseMode.MARKDOWN)
+        confirm = (
+            f"✅ {worker} → `{tag}`\n\n{text}"
+            if lang == "de"
+            else f"✅ {worker} → `{tag}`\n\n{text}"
+        )
+        await q.edit_message_text(confirm, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
         return
 
 

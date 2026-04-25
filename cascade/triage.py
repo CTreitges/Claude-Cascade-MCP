@@ -1,9 +1,10 @@
 """Classifies an inbound bot message: real coding task vs. casual chat.
 
-Implementation: a single fast `claude -p --model haiku` call returning JSON
+Implementation: a single fast `claude -p` call (configurable via
+CASCADE_TRIAGE_MODEL, default Sonnet 4.6) returning JSON
 {is_task: bool, task: str|None, reply: str|None}.
 
-Falls back to a tiny heuristic if claude is unreachable, so the bot stays
+Falls back to a regex heuristic if claude is unreachable so the bot stays
 responsive even if claude credentials are missing.
 """
 
@@ -25,7 +26,7 @@ class TriageResult:
     is_task: bool
     task: str | None      # the (possibly refined) task to dispatch
     reply: str | None     # if is_task=False, the friendly reply to send back
-    via: str              # "haiku" | "heuristic"
+    via: str              # "claude" | "heuristic" | "disabled"
 
 
 SYSTEM_DE = """Du bist der Dispatcher eines Coding-Bots namens Claude-Cascade.
@@ -92,7 +93,7 @@ async def triage(message: str, *, lang: str = "de", s: Settings | None = None) -
             timeout_s=60,
         )
     except ClaudeCliError as e:
-        log.warning("triage haiku call failed (%s) — falling back to heuristic", e)
+        log.warning("triage claude call failed (%s) — falling back to heuristic", e)
         return _heuristic(message, lang)
 
     try:
@@ -107,11 +108,11 @@ async def triage(message: str, *, lang: str = "de", s: Settings | None = None) -
             is_task=True,
             task=str(data.get("task") or message),
             reply=None,
-            via="haiku",
+            via="claude",
         )
     return TriageResult(
         is_task=False,
         task=None,
         reply=str(data.get("reply") or ""),
-        via="haiku",
+        via="claude",
     )

@@ -12,13 +12,9 @@ from cascade.models import (
 from cascade.triage import _heuristic, triage
 
 
-def test_implementer_catalog_contains_user_requested_models():
+def test_implementer_catalog_is_curated_to_four():
     tags = set(IMPLEMENTER_MODELS.keys())
-    assert "qwen3-coder:480b" in tags
-    assert "glm-5.1" in tags
-    assert "minimax-m2.7" in tags
-    assert "deepseek-v4-flash" in tags
-    assert "kimi-k2.6" in tags
+    assert tags == {"glm-5.1", "kimi-k2.6", "minimax-m2.7", "deepseek-v4-flash"}
 
 
 def test_planner_reviewer_has_opus_and_sonnet():
@@ -80,7 +76,7 @@ async def test_triage_falls_back_when_claude_fails(monkeypatch):
     assert r.via == "heuristic"
 
 
-async def test_triage_uses_haiku_when_available(monkeypatch):
+async def test_triage_uses_claude_when_available(monkeypatch):
     from cascade import triage as triage_mod
     from cascade.claude_cli import ClaudeResult
 
@@ -91,7 +87,7 @@ async def test_triage_uses_haiku_when_available(monkeypatch):
 
     s = Settings(cascade_triage_enabled=True)
     r = await triage_mod.triage("please build foo", lang="en", s=s)
-    assert r.via == "haiku"
+    assert r.via == "claude"
     assert r.is_task is True
     assert r.task == "build foo"
 
@@ -107,6 +103,6 @@ async def test_triage_returns_reply_for_chat(monkeypatch):
 
     s = Settings(cascade_triage_enabled=True)
     r = await triage_mod.triage("hi", lang="en", s=s)
-    assert r.via == "haiku"
+    assert r.via == "claude"
     assert r.is_task is False
     assert r.reply == "Hi there!"

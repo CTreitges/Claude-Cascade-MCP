@@ -7,25 +7,19 @@ Add or rename entries here; the bot's /models command picks them up automaticall
 from __future__ import annotations
 
 # tag → (display name, provider)
+# Curated user-facing list shown in the Telegram /models menu.
+# qwen3-coder:480b stays as the runtime default (CASCADE_IMPLEMENTER_MODEL),
+# but the menu only offers the four explicitly requested cloud options.
 IMPLEMENTER_MODELS: dict[str, tuple[str, str]] = {
-    "qwen3-coder:480b":    ("Qwen3 Coder 480B (Default)", "ollama"),
-    "glm-5.1":             ("GLM 5.1", "ollama"),
-    "glm-5":               ("GLM 5", "ollama"),
-    "glm-4.7":             ("GLM 4.7", "ollama"),
-    "minimax-m2.7":        ("MiniMax M2.7", "ollama"),
-    "minimax-m2.5":        ("MiniMax M2.5", "ollama"),
-    "deepseek-v4-flash":   ("DeepSeek V4 Flash", "ollama"),
-    "deepseek-v3.2":       ("DeepSeek V3.2", "ollama"),
-    "deepseek-v3.1:671b":  ("DeepSeek V3.1 671B", "ollama"),
-    "kimi-k2.6":           ("Kimi K2.6", "ollama"),
-    "kimi-k2-thinking":    ("Kimi K2 Thinking", "ollama"),
-    "kimi-k2:1t":          ("Kimi K2 1T", "ollama"),
+    "glm-5.1":           ("GLM 5.1", "ollama"),
+    "kimi-k2.6":         ("Kimi K2.6", "ollama"),
+    "minimax-m2.7":      ("MiniMax M2.7", "ollama"),
+    "deepseek-v4-flash": ("DeepSeek V4", "ollama"),
 }
 
 PLANNER_REVIEWER_MODELS: dict[str, str] = {
     "claude-opus-4-7":   "Claude Opus 4.7",
     "claude-sonnet-4-6": "Claude Sonnet 4.6",
-    "claude-haiku-4-5":  "Claude Haiku 4.5",
 }
 
 
