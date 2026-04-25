@@ -96,6 +96,28 @@ async def _send(message: Message, text: str, *, code: bool = False) -> Message:
     return await message.reply_text(text[:4000])
 
 
+def _md_escape(s: str) -> str:
+    """Escape characters that would break Telegram Markdown parsing."""
+    if not s:
+        return ""
+    for ch in ("_", "*", "`", "["):
+        s = s.replace(ch, "\\" + ch)
+    return s
+
+
+async def _send_long(message: Message, text: str, *, code: bool = False, chunk: int = 3500) -> None:
+    """Send a long string as multiple messages, optionally each in a code block."""
+    if not text:
+        return
+    pieces = [text[i:i + chunk] for i in range(0, len(text), chunk)]
+    for i, piece in enumerate(pieces):
+        prefix = "" if len(pieces) == 1 else f"({i + 1}/{len(pieces)})\n"
+        if code:
+            await message.reply_text(f"{prefix}```\n{piece}\n```", parse_mode=ParseMode.MARKDOWN)
+        else:
+            await message.reply_text(prefix + piece)
+
+
 def _fmt_status_emoji(status: str) -> str:
     return {
         "pending": "⏳",
@@ -139,7 +161,7 @@ async def _run_task_for_chat(
     status_msg = await msg.reply_text(initial)
     cancel = asyncio.Event()
 
-    state = {"last_text": initial, "skill_suggestion": None}
+    state = {"lines": [initial], "skill_suggestion": None}
 
     async def progress(task_id: str, event: str, payload: dict) -> None:
         # Capture skill suggestions so we can prompt the user after the run.
@@ -149,12 +171,12 @@ async def _run_task_for_chat(
         line = _format_progress_line(event, payload, lang)
         if not line:
             return
-        new_text = state["last_text"] + "\n" + line
-        if len(new_text) > 3500:
-            new_text = "…\n" + new_text[-3400:]
-        state["last_text"] = new_text
+        # Keep header + last 8 events so the message stays readable on phones.
+        state["lines"].append(line)
+        if len(state["lines"]) > 9:  # 1 header + 8 events
+            state["lines"] = [state["lines"][0], "  …"] + state["lines"][-7:]
         try:
-            await status_msg.edit_text(new_text)
+            await status_msg.edit_text("\n".join(state["lines"]))
         except Exception:
             pass
 
@@ -231,7 +253,25 @@ async def _run_task_for_chat(
     full_msg = "\n".join(parts)
     if len(full_msg) > 3800:
         full_msg = full_msg[:3800] + "…"
-    await msg.reply_text(full_msg, parse_mode=ParseMode.MARKDOWN)
+    # Quick-action buttons under the result so the user can chain follow-ups.
+    if result.status in ("done", "failed") and result.task_id:
+        action_kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                "🔄 " + ("Nochmal" if lang == "de" else "Again"),
+                callback_data=f"act:again:{result.task_id}",
+            ),
+            InlineKeyboardButton(
+                "📄 " + ("Diff" if lang == "de" else "Diff"),
+                callback_data=f"act:diff:{result.task_id}",
+            ),
+            InlineKeyboardButton(
+                "🔁 " + ("Resume" if lang == "de" else "Resume"),
+                callback_data=f"act:resume:{result.task_id}",
+            ),
+        ]])
+        await msg.reply_text(full_msg, parse_mode=ParseMode.MARKDOWN, reply_markup=action_kb)
+    else:
+        await msg.reply_text(full_msg, parse_mode=ParseMode.MARKDOWN)
 
     # Diff in a separate code-block message so it doesn't break parsing.
     if result.diff and result.diff.strip():
@@ -298,6 +338,318 @@ async def cmd_help(update: Update, _ctx) -> None:
     if not await _owner_only(update, _ctx):
         return
     await update.effective_message.reply_text(t("help", lang=_lang(update)), parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_start(update: Update, ctx) -> None:
+    """First-contact greeting + help."""
+    if not await _owner_only(update, ctx):
+        return
+    lang = _lang(update)
+    if lang == "de":
+        text = (
+            "👋 *Willkommen bei Claude-Cascade*\n\n"
+            "Ich bin ein Multi-Agent Coding-Bot.\n"
+            "• Schreib mir eine Aufgabe als Text/Voice/Foto+Caption — ich plane, baue, prüfe.\n"
+            "• Schreib mir eine Frage — ich antworte ohne Cascade zu starten.\n"
+            "• Mit `/help` siehst du alle Commands.\n\n"
+            "Probier z.B.:\n"
+            "  „Erstelle eine kleine CLI in /tmp/foo die `--version` ausgibt"
+        )
+    else:
+        text = (
+            "👋 *Welcome to Claude-Cascade*\n\n"
+            "I'm a multi-agent coding bot.\n"
+            "• Send me a task (text/voice/photo+caption) — I plan, build, review.\n"
+            "• Send me a question — I'll reply without spinning up a cascade.\n"
+            "• `/help` shows all commands.\n\n"
+            "Try e.g.:\n"
+            "  \"Create a small CLI in /tmp/foo that prints --version\""
+        )
+    await update.effective_message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_whoami(update: Update, ctx) -> None:
+    if not await _owner_only(update, ctx):
+        return
+    s = settings()
+    user = update.effective_user
+    chat = update.effective_chat
+    lang = _lang(update)
+    bot_me = await ctx.bot.get_me()
+    if lang == "de":
+        text = (
+            f"*Bot:* @{bot_me.username} (`{bot_me.id}`)\n"
+            f"*Owner:* `{s.telegram_owner_id}`\n"
+            f"*Du bist:* {user.first_name} (`{user.id}`)\n"
+            f"*Chat:* `{chat.id}`\n"
+            f"*Sprache:* `{lang}`\n"
+            f"*Zeitzone:* `{s.cascade_timezone}`"
+        )
+    else:
+        text = (
+            f"*Bot:* @{bot_me.username} (`{bot_me.id}`)\n"
+            f"*Owner:* `{s.telegram_owner_id}`\n"
+            f"*You are:* {user.first_name} (`{user.id}`)\n"
+            f"*Chat:* `{chat.id}`\n"
+            f"*Language:* `{lang}`\n"
+            f"*Timezone:* `{s.cascade_timezone}`"
+        )
+    await update.effective_message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_settings(update: Update, ctx) -> None:
+    """Aggregated chat settings overview."""
+    if not await _owner_only(update, ctx):
+        return
+    lang = _lang(update)
+    store: Store = ctx.application.bot_data["store"]
+    chat_id = update.effective_chat.id
+    sess = await store.get_chat_session(chat_id) or {}
+    s = settings()
+
+    repo = sess.get("repo_path") or "—"
+    plan_m = sess.get("planner_model") or s.cascade_planner_model
+    impl_m = sess.get("implementer_model") or s.cascade_implementer_model
+    rev_m = sess.get("reviewer_model") or s.cascade_reviewer_model
+    plan_e = sess.get("planner_effort") or s.cascade_planner_effort or "default"
+    rev_e = sess.get("reviewer_effort") or s.cascade_reviewer_effort or "default"
+    tri_e = sess.get("triage_effort") or s.cascade_triage_effort or "default"
+    replan = sess.get("replan_max")
+    replan_display = replan if replan is not None else f"default ({s.cascade_replan_max})"
+    triage = "on" if s.cascade_triage_enabled else "off"
+    auto_skill = "on" if s.cascade_auto_skill_suggest else "off"
+
+    if lang == "de":
+        head = (
+            "⚙️ *Aktuelle Chat-Einstellungen*\n\n"
+            f"*Repo:* `{repo}`\n"
+            f"*Sprache:* `{lang}`\n\n"
+            "*Modelle:*\n"
+            f"• 🧠 Planner: `{plan_m}` (effort `{plan_e}`)\n"
+            f"• 🛠 Implementer: `{impl_m}`\n"
+            f"• 🔍 Reviewer: `{rev_m}` (effort `{rev_e}`)\n"
+            f"• 🤖 Triage: effort `{tri_e}`, status `{triage}`\n\n"
+            f"*Replan-Budget:* `{replan_display}`\n"
+            f"*Auto-Skill-Vorschläge:* `{auto_skill}`\n\n"
+            "Ändern via /repo /lang /models /effort /replan."
+        )
+    else:
+        head = (
+            "⚙️ *Current chat settings*\n\n"
+            f"*Repo:* `{repo}`\n"
+            f"*Language:* `{lang}`\n\n"
+            "*Models:*\n"
+            f"• 🧠 Planner: `{plan_m}` (effort `{plan_e}`)\n"
+            f"• 🛠 Implementer: `{impl_m}`\n"
+            f"• 🔍 Reviewer: `{rev_m}` (effort `{rev_e}`)\n"
+            f"• 🤖 Triage: effort `{tri_e}`, status `{triage}`\n\n"
+            f"*Replan budget:* `{replan_display}`\n"
+            f"*Auto-skill-suggestions:* `{auto_skill}`\n\n"
+            "Change via /repo /lang /models /effort /replan."
+        )
+    await update.effective_message.reply_text(head, parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_again(update: Update, ctx) -> None:
+    """Re-run the last task (or a specified one) verbatim."""
+    if not await _owner_only(update, ctx):
+        return
+    lang = _lang(update)
+    store: Store = ctx.application.bot_data["store"]
+    args = ctx.args or []
+    if args:
+        task = await store.get_task(args[0])
+    else:
+        task = await store.latest_task()
+    if not task:
+        await update.effective_message.reply_text(
+            "Kein Task gefunden." if lang == "de" else "No task found."
+        )
+        return
+    await update.effective_message.reply_text(
+        f"🔄 Wiederhole: {(task.task_text or '')[:200]}" if lang == "de"
+        else f"🔄 Re-running: {(task.task_text or '')[:200]}"
+    )
+    await _run_task_for_chat(update, ctx, task.task_text)
+
+
+async def cmd_diff(update: Update, ctx) -> None:
+    """Show the full stored diff of a task."""
+    if not await _owner_only(update, ctx):
+        return
+    lang = _lang(update)
+    store: Store = ctx.application.bot_data["store"]
+    args = ctx.args or []
+    if args:
+        tid = args[0]
+    else:
+        latest = await store.latest_task()
+        if not latest:
+            await update.effective_message.reply_text(
+                "Kein Task." if lang == "de" else "No task."
+            )
+            return
+        tid = latest.id
+    iters = await store.list_iterations(tid)
+    runtime = [i for i in iters if i.n > 0]
+    if not runtime or not runtime[-1].diff_excerpt:
+        await update.effective_message.reply_text(
+            "Kein Diff vorhanden." if lang == "de" else "No diff stored."
+        )
+        return
+    await _send_long(update.effective_message, runtime[-1].diff_excerpt, code=True)
+
+
+async def cmd_queue(update: Update, ctx) -> None:
+    """Show currently in-flight tasks for this process."""
+    if not await _owner_only(update, ctx):
+        return
+    lang = _lang(update)
+    if not _INFLIGHT:
+        await update.effective_message.reply_text(
+            "Nichts läuft gerade." if lang == "de" else "Nothing in flight."
+        )
+        return
+    lines = ["*Laufende Tasks:*" if lang == "de" else "*Running tasks:*"]
+    for cid, (tid, _task, _ev) in _INFLIGHT.items():
+        lines.append(f"• `{tid}` (chat `{cid}`)")
+    await update.effective_message.reply_text(
+        "\n".join(lines), parse_mode=ParseMode.MARKDOWN
+    )
+
+
+async def cmd_abort(update: Update, ctx) -> None:
+    """Cancel every in-flight task across all chats."""
+    if not await _owner_only(update, ctx):
+        return
+    lang = _lang(update)
+    if not _INFLIGHT:
+        await update.effective_message.reply_text(
+            "Nichts zu abbrechen." if lang == "de" else "Nothing to abort."
+        )
+        return
+    n = 0
+    for _cid, (_tid, _task, ev) in list(_INFLIGHT.items()):
+        ev.set()
+        n += 1
+    await update.effective_message.reply_text(
+        f"🚫 {n} Task(s) abgebrochen." if lang == "de"
+        else f"🚫 Aborted {n} task(s)."
+    )
+
+
+async def cmd_dryrun(update: Update, ctx) -> None:
+    """Plan-only: invoke the planner without launching the implementer/reviewer.
+    Cheap way to preview what cascade would do."""
+    if not await _owner_only(update, ctx):
+        return
+    lang = _lang(update)
+    args_text = " ".join(ctx.args or []).strip()
+    if not args_text:
+        await update.effective_message.reply_text(
+            "Aufruf: /dryrun <Aufgabe>" if lang == "de" else "Usage: /dryrun <task>"
+        )
+        return
+    s = settings()
+    store: Store = ctx.application.bot_data["store"]
+    sess = await store.get_chat_session(update.effective_chat.id) or {}
+    if sess.get("planner_model"):
+        s = s.model_copy(update={"cascade_planner_model": sess["planner_model"]})
+    if sess.get("planner_effort"):
+        s = s.model_copy(update={"cascade_planner_effort": sess["planner_effort"]})
+
+    await ctx.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
+    msg = await update.effective_message.reply_text(
+        "🧠 Plane (dry-run, ohne Implementer)…" if lang == "de"
+        else "🧠 Planning (dry-run, no implementer)…"
+    )
+
+    try:
+        from cascade.agents.planner import call_planner
+        from cascade.repo_resolver import discover_local_repos, repos_for_planner_prompt
+        repos = await asyncio.to_thread(discover_local_repos)
+        block = repos_for_planner_prompt(repos, args_text)
+        plan = await call_planner(args_text, repo_candidates_block=block, s=s)
+    except Exception as e:
+        await msg.edit_text(f"❌ {e}")
+        return
+
+    parts = [
+        "🧠 *Dry-Run-Plan*" if lang == "de" else "🧠 *Dry-Run plan*",
+        f"\n*Summary:* {plan.summary}",
+        "\n*Steps:*\n" + "\n".join(f"  • {s}" for s in plan.steps),
+        "\n*Files:* " + (", ".join(f"`{f}`" for f in plan.files_to_touch) or "—"),
+        "\n*Acceptance:*\n" + "\n".join(f"  • {a}" for a in plan.acceptance_criteria),
+    ]
+    if plan.quality_checks:
+        parts.append("\n*Quality-Checks:*")
+        for c in plan.quality_checks:
+            parts.append(f"  • `{c.name}`: `{c.command}`")
+    parts.append(
+        f"\n*Repo:* `{plan.repo.kind}`"
+        + (f" → `{plan.repo.path}`" if plan.repo.path else "")
+        + (f" (clone {plan.repo.url})" if plan.repo.url else "")
+    )
+    full = "\n".join(parts)
+    if len(full) > 3800:
+        full = full[:3800] + "…"
+    await msg.edit_text(full, parse_mode=ParseMode.MARKDOWN)
+
+
+async def on_action_callback(update: Update, ctx) -> None:
+    """Handle the under-result quick-action buttons (Again / Diff / Resume)."""
+    if not await _owner_only(update, ctx):
+        return
+    q = update.callback_query
+    await q.answer()
+    data = q.data or ""
+    parts = data.split(":", 2)
+    if len(parts) != 3 or parts[0] != "act":
+        return
+    action, tid = parts[1], parts[2]
+    store: Store = ctx.application.bot_data["store"]
+    lang = _lang(update)
+
+    if action == "again":
+        task = await store.get_task(tid)
+        if not task:
+            await q.edit_message_reply_markup(reply_markup=None)
+            return
+        await q.message.reply_text(
+            f"🔄 Wiederhole: {(task.task_text or '')[:200]}" if lang == "de"
+            else f"🔄 Re-running: {(task.task_text or '')[:200]}"
+        )
+        await _run_task_for_chat(update, ctx, task.task_text)
+        return
+    if action == "diff":
+        iters = await store.list_iterations(tid)
+        runtime = [i for i in iters if i.n > 0]
+        if not runtime or not runtime[-1].diff_excerpt:
+            await q.message.reply_text(
+                "Kein Diff vorhanden." if lang == "de" else "No diff stored."
+            )
+            return
+        await _send_long(q.message, runtime[-1].diff_excerpt, code=True)
+        return
+    if action == "resume":
+        task = await store.get_task(tid)
+        if not task:
+            return
+        await _run_task_for_chat(update, ctx, task.task_text, resume_task_id=tid)
+        return
+
+
+async def cmd_unknown(update: Update, ctx) -> None:
+    """Catch-all for /commands we don't recognize."""
+    if not await _owner_only(update, ctx):
+        return
+    lang = _lang(update)
+    cmd = (update.effective_message.text or "").split(maxsplit=1)[0]
+    if lang == "de":
+        text = f"Unbekanntes Kommando: `{cmd}`. Mit /help siehst du alle verfügbaren."
+    else:
+        text = f"Unknown command: `{cmd}`. Use /help to list everything."
+    await update.effective_message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 
 async def cmd_models(update: Update, ctx) -> None:
@@ -1095,7 +1447,14 @@ def main() -> None:
     )
 
     app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("start", cmd_help))
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("whoami", cmd_whoami))
+    app.add_handler(CommandHandler("settings", cmd_settings))
+    app.add_handler(CommandHandler("again", cmd_again))
+    app.add_handler(CommandHandler("diff", cmd_diff))
+    app.add_handler(CommandHandler("queue", cmd_queue))
+    app.add_handler(CommandHandler("abort", cmd_abort))
+    app.add_handler(CommandHandler("dryrun", cmd_dryrun))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("logs", cmd_logs))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
@@ -1114,6 +1473,10 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(on_effort_callback, pattern=r"^e:"))
     app.add_handler(CallbackQueryHandler(on_replan_callback, pattern=r"^r:"))
     app.add_handler(CallbackQueryHandler(on_skill_callback, pattern=r"^sk:"))
+    app.add_handler(CallbackQueryHandler(on_action_callback, pattern=r"^act:"))
+
+    # Catch-all for unknown /commands. Must come AFTER all known CommandHandlers.
+    app.add_handler(MessageHandler(filters.COMMAND, cmd_unknown))
 
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, on_voice))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, on_photo_or_document))
