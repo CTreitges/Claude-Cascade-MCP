@@ -69,10 +69,11 @@ def test_fmt_local_uses_settings_tz(monkeypatch):
     from datetime import datetime, timezone
     ts = int(datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc).timestamp())  # well into DST
     s = Settings(cascade_timezone="Europe/Berlin")
-    monkeypatch.setattr(bot, "settings", lambda: s)
+    import cascade.bot.helpers as _bh
+    monkeypatch.setattr(_bh, "settings", lambda: s)
     out_berlin = bot._fmt_local(ts)
     s2 = Settings(cascade_timezone="UTC")
-    monkeypatch.setattr(bot, "settings", lambda: s2)
+    monkeypatch.setattr(_bh, "settings", lambda: s2)
     out_utc = bot._fmt_local(ts)
     assert out_utc == "12:00:00"
     assert out_berlin == "14:00:00"  # CEST = UTC+2
@@ -80,7 +81,8 @@ def test_fmt_local_uses_settings_tz(monkeypatch):
 
 def test_fmt_local_invalid_tz_falls_back(monkeypatch):
     s = Settings(cascade_timezone="Atlantis/Bermuda")
-    monkeypatch.setattr(bot, "settings", lambda: s)
+    import cascade.bot.helpers as _bh
+    monkeypatch.setattr(_bh, "settings", lambda: s)
     # Should not crash; ZoneInfoNotFoundError is caught and tz=None used
     out = bot._fmt_local(1777127400)
     assert ":" in out  # some hh:mm:ss
@@ -97,37 +99,43 @@ def _fake_update(user_id: int | None) -> SimpleNamespace:
 
 def test_is_owner_blocks_unset_owner_id(monkeypatch):
     s = Settings(telegram_owner_id=0)
-    monkeypatch.setattr(bot, "settings", lambda: s)
+    import cascade.bot.helpers as _bh
+    monkeypatch.setattr(_bh, "settings", lambda: s)
     assert bot._is_owner(_fake_update(123)) is False
 
 
 def test_is_owner_blocks_wrong_user(monkeypatch):
     s = Settings(telegram_owner_id=42)
-    monkeypatch.setattr(bot, "settings", lambda: s)
+    import cascade.bot.helpers as _bh
+    monkeypatch.setattr(_bh, "settings", lambda: s)
     assert bot._is_owner(_fake_update(99)) is False
 
 
 def test_is_owner_admits_correct_user(monkeypatch):
     s = Settings(telegram_owner_id=42)
-    monkeypatch.setattr(bot, "settings", lambda: s)
+    import cascade.bot.helpers as _bh
+    monkeypatch.setattr(_bh, "settings", lambda: s)
     assert bot._is_owner(_fake_update(42)) is True
 
 
 def test_is_owner_blocks_no_user(monkeypatch):
     s = Settings(telegram_owner_id=42)
-    monkeypatch.setattr(bot, "settings", lambda: s)
+    import cascade.bot.helpers as _bh
+    monkeypatch.setattr(_bh, "settings", lambda: s)
     assert bot._is_owner(_fake_update(None)) is False
 
 
 async def test_owner_only_returns_false_silently_for_others(monkeypatch):
     s = Settings(telegram_owner_id=42)
-    monkeypatch.setattr(bot, "settings", lambda: s)
+    import cascade.bot.helpers as _bh
+    monkeypatch.setattr(_bh, "settings", lambda: s)
     assert await bot._owner_only(_fake_update(99), None) is False
 
 
 async def test_owner_only_returns_true_for_owner(monkeypatch):
     s = Settings(telegram_owner_id=42)
-    monkeypatch.setattr(bot, "settings", lambda: s)
+    import cascade.bot.helpers as _bh
+    monkeypatch.setattr(_bh, "settings", lambda: s)
     assert await bot._owner_only(_fake_update(42), None) is True
 
 
