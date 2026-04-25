@@ -191,7 +191,10 @@ async def run_cascade(
 
         # Loop
         last_review: ReviewResult | None = None
+        last_check_results: list = []
         feedback: str | None = None
+        consecutive_failures = 0
+        replans_done = 0
         iter_n = start_iter
         for iter_n in range(start_iter, s.cascade_max_iterations + 1):
             await _check_cancel(cancel_event, store, task_id)
@@ -240,13 +243,47 @@ async def run_cascade(
 
             await _check_cancel(cancel_event, store, task_id)
 
+            # Quality checks — objective, scriptable verifications declared
+            # by the planner. They run in the workspace and their results
+            # feed into the reviewer prompt + override pass=true if any failed.
+            check_results = []
+            for chk in plan.quality_checks:
+                try:
+                    res = await ws.run_check(chk)
+                except Exception as e:
+                    from .workspace import CheckResult as _CR
+                    res = _CR(chk.name, False, -3, f"runner-error: {e}", 0.0)
+                check_results.append(res)
+                await _log(
+                    store, task_id, "info" if res.ok else "warn",
+                    f"check[{iter_n}/{chk.name}] ok={res.ok} exit={res.exit_code} "
+                    f"out={(res.output or '').strip()[:200]!r}",
+                )
+            await _emit(
+                progress, store, task_id, "checks_run",
+                {"iteration": iter_n, "checks": [{"name": r.name, "ok": r.ok} for r in check_results]},
+            )
+
             # Review
             diff = ws.diff()
             await _emit(progress, store, task_id, "reviewing", {"iteration": iter_n})
             try:
-                review: ReviewResult = await call_reviewer(plan, diff, s=s)
+                review: ReviewResult = await call_reviewer(plan, diff, check_results=check_results, s=s)
             except Exception as e:
                 return await _fail(store, task_id, ws, f"reviewer iter {iter_n}", e, progress)
+
+            # Hard gate: any failed check overrides a `pass=true` from the reviewer.
+            failing_checks = [r.name for r in check_results if not r.ok]
+            if failing_checks and review.passed:
+                review = review.model_copy(update={
+                    "passed": False,
+                    "feedback": (
+                        f"Quality checks failed: {', '.join(failing_checks)}. "
+                        f"{review.feedback or ''}"
+                    ).strip(),
+                })
+
+            last_check_results = check_results
 
             await store.record_iteration(
                 task_id,
@@ -307,6 +344,7 @@ async def run_cascade(
 
             # not passed → next iteration
             feedback = review.feedback
+            consecutive_failures += 1
             await _emit(
                 progress,
                 store,
@@ -314,6 +352,47 @@ async def run_cascade(
                 "iteration_failed",
                 {"iteration": iter_n, "feedback": feedback},
             )
+
+            # Re-plan trigger: if we've been stuck for N consecutive iterations
+            # AND we still have replan budget AND there are more iterations left
+            # to actually use the new plan, ask the planner to rewrite the plan
+            # (especially the quality_checks). Solves the loop deadlock when
+            # the plan itself is wrong (e.g. python vs python3).
+            iters_left = s.cascade_max_iterations - iter_n
+            if (
+                consecutive_failures >= s.cascade_replan_after_failures
+                and replans_done < s.cascade_replan_max
+                and iters_left >= 1
+            ):
+                replan_block = _build_replan_feedback(plan, await store.list_iterations(task_id))
+                await _emit(progress, store, task_id, "replanning",
+                            {"after_iteration": iter_n, "replans_done": replans_done})
+                try:
+                    new_plan = await call_planner(
+                        task,
+                        attachments=attachments,
+                        recall_context=recall,
+                        repo_candidates_block=repo_candidates_block,
+                        replan_feedback=replan_block,
+                        s=s,
+                    )
+                    plan = new_plan
+                    feedback = None  # fresh slate; new plan replaces old feedback
+                    consecutive_failures = 0
+                    replans_done += 1
+                    await store.record_iteration(
+                        task_id, 0, implementer_output=plan.model_dump_json()
+                    )
+                    await _emit(
+                        progress, store, task_id, "replanned",
+                        {"summary": plan.summary, "checks": [c.name for c in plan.quality_checks]},
+                    )
+                    await _log(
+                        store, task_id, "info",
+                        f"replanned after iter {iter_n} (replans_done={replans_done})",
+                    )
+                except Exception as e:
+                    await _log(store, task_id, "warn", f"replan failed, continuing with old plan: {e}")
 
         # Max iterations exhausted
         summary = f"failed after {s.cascade_max_iterations} iterations"
@@ -339,6 +418,34 @@ async def run_cascade(
 
 
 # ---------- helpers ----------
+
+
+def _build_replan_feedback(prev_plan: Plan, iter_history: list) -> str:
+    """Render a compact summary of the previous plan + iteration failures
+    so the planner can produce a corrected plan."""
+    lines = [
+        "PREVIOUS PLAN (now superseded):",
+        f"  summary: {prev_plan.summary}",
+        f"  steps: {prev_plan.steps}",
+        f"  files_to_touch: {prev_plan.files_to_touch}",
+        f"  acceptance_criteria: {prev_plan.acceptance_criteria}",
+        f"  quality_checks:",
+    ]
+    for qc in prev_plan.quality_checks:
+        lines.append(f"    - name={qc.name!r} command={qc.command!r}")
+    lines.append("\nITERATION HISTORY:")
+    runtime_iters = [i for i in iter_history if i.n > 0]
+    for it in runtime_iters[-4:]:  # last few iterations only
+        lines.append(
+            f"  iter {it.n}: pass={it.reviewer_pass} "
+            f"feedback={(it.reviewer_feedback or '').strip()[:300]!r}"
+        )
+    lines.append(
+        "\nLikely root cause to consider: were the quality_checks commands "
+        "correct for this Linux runner? (Use python3, not python; absolute "
+        "paths; cwd is the repo root.) Adjust the plan accordingly."
+    )
+    return "\n".join(lines)
 
 
 async def _emit(

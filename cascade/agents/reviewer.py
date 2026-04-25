@@ -33,25 +33,48 @@ SCHEMA_HINT = """{
 }"""
 
 
-def _build_prompt(plan: Plan, diff: str) -> str:
-    return (
-        f"PLAN:\nsummary: {plan.summary}\n"
-        f"steps:\n" + "\n".join(f"- {s}" for s in plan.steps) + "\n"
-        f"acceptance_criteria:\n" + "\n".join(f"- {a}" for a in plan.acceptance_criteria) + "\n"
-        f"\nDIFF:\n{diff or '(empty diff — implementer produced no changes)'}\n"
-        "\nRespond with a single JSON object matching this schema:\n" + SCHEMA_HINT
-    )
+def _format_check_results(results) -> str:
+    if not results:
+        return "(none defined)"
+    lines = []
+    for r in results:
+        mark = "✅" if r.ok else "❌"
+        out_excerpt = (r.output or "").strip().splitlines()
+        tail = (out_excerpt[-3:] if out_excerpt else [])
+        lines.append(
+            f"{mark} {r.name} (exit={r.exit_code}, {r.duration_s:.1f}s)\n"
+            + ("\n".join(f"    | {l[:200]}" for l in tail) if tail else "")
+        )
+    return "\n".join(lines)
+
+
+def _build_prompt(plan: Plan, diff: str, check_results=None) -> str:
+    parts = [
+        f"PLAN:\nsummary: {plan.summary}",
+        f"steps:\n" + "\n".join(f"- {s}" for s in plan.steps),
+        f"acceptance_criteria:\n" + "\n".join(f"- {a}" for a in plan.acceptance_criteria),
+    ]
+    if check_results is not None:
+        parts.append(f"\nQUALITY CHECK RESULTS:\n{_format_check_results(check_results)}")
+        parts.append(
+            "Rule: if ANY check failed (❌), you MUST set pass=false and explain "
+            "exactly which check needs to pass and how the implementer should fix it."
+        )
+    parts.append(f"\nDIFF:\n{diff or '(empty diff — implementer produced no changes)'}")
+    parts.append("\nRespond with a single JSON object matching this schema:\n" + SCHEMA_HINT)
+    return "\n".join(parts)
 
 
 async def call_reviewer(
     plan: Plan,
     diff: str,
     *,
+    check_results=None,
     s: Settings | None = None,
 ) -> ReviewResult:
     s = s or settings()
     result = await claude_call(
-        prompt=_build_prompt(plan, diff),
+        prompt=_build_prompt(plan, diff, check_results),
         model=s.cascade_reviewer_model,
         system_prompt=REVIEWER_SYSTEM,
         output_json=True,

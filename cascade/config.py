@@ -51,7 +51,12 @@ class Settings(BaseSettings):
 
     cascade_home: Path = Field(default_factory=lambda: Path.home() / "claude-cascade")
     cascade_timezone: str = "Europe/Berlin"
-    cascade_max_iterations: int = 3
+    cascade_max_iterations: int = 5
+    # When the implementer-reviewer loop gets stuck (same check/feedback failing
+    # repeatedly), invoke the planner again with the failure history so it can
+    # rewrite the plan and quality_checks.
+    cascade_replan_after_failures: int = 2
+    cascade_replan_max: int = 2
     cascade_workspace_retention_days: int = 7
     cascade_db_path: Path = Field(
         default_factory=lambda: Path.home() / "claude-cascade" / "store" / "cascade.db"

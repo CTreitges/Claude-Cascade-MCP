@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import subprocess
 import time
@@ -42,6 +43,15 @@ class WorkspaceError(Exception):
     pass
 
 
+@dataclass
+class CheckResult:
+    name: str
+    ok: bool
+    exit_code: int
+    output: str
+    duration_s: float
+
+
 class Workspace:
     """A sandboxed working directory backed by git for diffs."""
 
@@ -49,6 +59,10 @@ class Workspace:
         self.root = root.resolve()
         if not self.root.exists():
             raise WorkspaceError(f"Workspace does not exist: {self.root}")
+        # When True we're working in an existing user repo; we MUST NOT create
+        # iter-N commits there (it pollutes their history). Diffs use base_ref.
+        self.is_attached: bool = False
+        self.base_ref: str | None = None
 
     # ---------- factory / lifecycle ----------
 
@@ -69,9 +83,18 @@ class Workspace:
 
     @classmethod
     def attach(cls, repo_path: Path) -> "Workspace":
-        """Attach to an existing repo (used when --repo is set)."""
+        """Attach to an existing repo (used when --repo is set or planner picks one).
+
+        Records the current HEAD as `base_ref` so subsequent diffs only show what
+        Cascade itself changed — and crucially, suppresses iter-N commits that
+        would otherwise pollute the user's history.
+        """
         ws = cls(Path(repo_path))
-        # Don't re-init or commit — caller's working tree is sacred.
+        ws.is_attached = True
+        if (ws.root / ".git").exists():
+            r = ws._git(["rev-parse", "HEAD"])
+            if r.returncode == 0:
+                ws.base_ref = r.stdout.strip() or None
         return ws
 
     def cleanup(self) -> None:
@@ -154,17 +177,78 @@ class Workspace:
         self._git(["add", "-A"])
 
     def diff(self, max_bytes: int = 200_000) -> str:
-        """Return staged diff vs. last commit, truncated."""
-        self.stage_all()
-        out = self._git(["diff", "--cached"]).stdout
+        """Return diff describing Cascade's changes only.
+
+        - Detached (Workspace.create): stage everything, diff vs. last `iter` commit.
+        - Attached (Workspace.attach): diff working-tree vs. base_ref recorded at
+          attach time. This isolates Cascade's edits from any uncommitted user
+          changes that were already in the tree.
+        """
+        if self.is_attached and self.base_ref:
+            # Stage everything so untracked Cascade-created files appear in the
+            # diff. Yes this also stages any pre-existing user edits — we accept
+            # that trade-off; without staging, brand-new files are invisible to
+            # the reviewer. The reviewer prompt is told to focus on plan-relevant
+            # changes only.
+            self.stage_all()
+            out = self._git(["diff", "--cached", self.base_ref]).stdout
+        else:
+            self.stage_all()
+            out = self._git(["diff", "--cached"]).stdout
         if len(out) > max_bytes:
             out = out[:max_bytes] + f"\n…(truncated, {len(out) - max_bytes} more bytes)"
         return out
 
     def commit_iteration(self, n: int) -> None:
+        """Commit current changes as iter-N. No-op on attached user repos —
+        we MUST NOT pollute their history with internal iteration markers."""
+        if self.is_attached:
+            return
         self.stage_all()
-        # only commits if there are staged changes
         self._git(["commit", "-q", "--allow-empty", "-m", f"iter {n}"])
+
+    # ---------- quality checks ----------
+
+    async def run_check(self, check: "QualityCheck") -> CheckResult:
+        """Run a planner-defined quality check inside the workspace.
+
+        Streams stdout+stderr together, kills on timeout, caps output to ~16kB.
+        """
+        started = asyncio.get_event_loop().time()
+        env = {**os.environ}
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                check.command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=str(self.root),
+                env=env,
+            )
+        except Exception as e:
+            return CheckResult(check.name, False, -1, f"spawn-error: {e}", 0.0)
+
+        try:
+            out_b, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=max(1, check.timeout_s)
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            duration = asyncio.get_event_loop().time() - started
+            return CheckResult(
+                check.name, False, -2, f"timeout after {check.timeout_s}s", duration
+            )
+
+        duration = asyncio.get_event_loop().time() - started
+        out = out_b.decode("utf-8", errors="replace")
+        if len(out) > 16_000:
+            out = out[:16_000] + f"\n…(truncated, +{len(out) - 16_000} chars)"
+
+        ok = proc.returncode == 0 if check.must_succeed else True
+        if check.expected_substring and check.expected_substring not in out:
+            ok = False
+        return CheckResult(check.name, ok, proc.returncode or 0, out, duration)
+
 
     def list_files(self) -> list[str]:
         out = self._git(["ls-files"]).stdout
@@ -244,6 +328,19 @@ class Workspace:
                         return picked
 
         return picked
+
+
+class QualityCheck(BaseModel):
+    """A planner-declared, objectively-verifiable check executed in the workspace.
+
+    Defined here (not in agents/planner.py) so workspace.run_check can take it
+    as a parameter without a circular import. Re-exported from agents.planner.
+    """
+    name: str = Field(..., description="Short human-readable name, e.g. 'pytest'.")
+    command: str = Field(..., description="Shell command, run with cwd=workspace root.")
+    must_succeed: bool = True
+    expected_substring: str | None = None
+    timeout_s: int = 60
 
 
 # ---------- async maintenance ----------
