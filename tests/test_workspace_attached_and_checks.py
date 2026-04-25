@@ -145,6 +145,48 @@ async def test_run_check_must_succeed_false(tmp_path: Path) -> None:
     assert res.exit_code != 0
 
 
+def test_changed_paths_attached_excludes_pre_existing(tmp_path: Path) -> None:
+    """attached repo: changed_paths() must NOT include files that already
+    existed at attach time — only what Cascade actually wrote."""
+    repo = _git_repo(tmp_path / "r")
+    # Pre-existing extra file the user committed before cascade attaches
+    (repo / "user_owned.py").write_text("orig\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "user file"], check=True)
+
+    ws = Workspace.attach(repo)
+    ws.apply_ops([FileOp(op="write", path="cascade_only.py", content="hi\n")])
+    changed = ws.changed_paths()
+    assert "cascade_only.py" in changed
+    # user_owned.py was already there at attach time → must NOT be reported.
+    assert "user_owned.py" not in changed
+
+
+def test_changed_paths_attached_reports_modifications(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "r")
+    ws = Workspace.attach(repo)
+    ws.apply_ops([FileOp(op="write", path="existing.txt", content="cascade rewrote this\n")])
+    changed = ws.changed_paths()
+    assert "existing.txt" in changed
+
+
+def test_changed_paths_detached_lists_new_files(tmp_path: Path) -> None:
+    ws = Workspace.create(tmp_path / "wb", task_id="cp1")
+    ws.apply_ops([
+        FileOp(op="write", path="a.py", content="x"),
+        FileOp(op="write", path="b/c.py", content="y"),
+    ])
+    changed = set(ws.changed_paths())
+    assert changed == {"a.py", "b/c.py"}
+
+
+def test_changed_paths_returns_empty_when_nothing_changed(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "r")
+    ws = Workspace.attach(repo)
+    # No apply_ops → nothing changed
+    assert ws.changed_paths() == []
+
+
 async def test_run_check_uses_workspace_cwd(tmp_path: Path) -> None:
     ws = Workspace.create(tmp_path / "wb", task_id="c6")
     ws.apply_ops([FileOp(op="write", path="sentinel.txt", content="found\n")])

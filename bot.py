@@ -225,6 +225,8 @@ async def _run_task_for_chat(
 
     # Heartbeat: edit the status message every 30s with an elapsed-time tag
     # so the user knows the bot is still alive during long Ollama / claude calls.
+    HB_MARKER = "​"  # zero-width space — distinguishes heartbeat from real events
+
     async def _heartbeat() -> None:
         spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
         i = 0
@@ -236,12 +238,11 @@ async def _run_task_for_chat(
             mark = spinner[i % len(spinner)]
             i += 1
             label = "läuft" if lang == "de" else "running"
-            tag = f"  {mark} {label} {elapsed}s"
+            tag = f"{HB_MARKER}  {mark} {label} {elapsed}s"
             try:
                 await ctx.bot.send_chat_action(chat.id, ChatAction.TYPING)
-                # Replace the trailing heartbeat line if present, else append.
                 lines = state["lines"]
-                if lines and lines[-1].startswith("  ⠋") or (lines and lines[-1].startswith("  ⠙")) or any(lines[-1].startswith(f"  {s}") for s in spinner):
+                if lines and lines[-1].startswith(HB_MARKER):
                     lines[-1] = tag
                 else:
                     lines.append(tag)
@@ -316,12 +317,9 @@ async def _run_task_for_chat(
         await msg.reply_text(full_msg, parse_mode=ParseMode.MARKDOWN)
 
     # Diff in a separate code-block message so it doesn't break parsing.
+    # Use _send_long so a multi-kB diff is chunked nicely instead of truncated.
     if result.diff and result.diff.strip():
-        diff_excerpt = result.diff[:3500]
-        await msg.reply_text(
-            f"```diff\n{diff_excerpt}\n```",
-            parse_mode=ParseMode.MARKDOWN,
-        )
+        await _send_long(msg, result.diff, code=True, chunk=3500)
 
     # Surface auto-skill-suggestion (if any) with inline accept/reject buttons.
     if result.status == "done" and state.get("skill_suggestion"):
@@ -1319,10 +1317,13 @@ async def cmd_history(update: Update, ctx) -> None:
     if not tasks:
         await update.effective_message.reply_text(t("no_tasks", lang=lang))
         return
-    lines = [
-        f"{_fmt_status_emoji(task.status)} `{task.id}` i={task.iteration} {task.task_text[:80]}"
-        for task in tasks
-    ]
+    lines = []
+    for task in tasks:
+        ts = _fmt_local(task.created_at, "%H:%M")
+        lines.append(
+            f"{_fmt_status_emoji(task.status)} {ts} `{task.id}` "
+            f"i={task.iteration} {task.task_text[:70]}"
+        )
     await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
 

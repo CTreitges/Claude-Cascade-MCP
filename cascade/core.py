@@ -336,9 +336,10 @@ async def run_cascade(
 
                 # Always record successful runs in memory — workspace + files
                 # are the durable artifacts that future runs may want to reuse.
+                changed = ws.changed_paths()
                 await remember_finding(
                     f"Task done: '{task[:120]}' → workspace={ws.root}, "
-                    f"iters={iter_n}, files={len(ws.list_files())}, "
+                    f"iters={iter_n}, files_changed={len(changed)}, "
                     f"plan_summary={(plan.summary or '')[:200]}",
                     category="finding",
                     importance="medium" if review.severity == "low" else "high",
@@ -393,7 +394,7 @@ async def run_cascade(
                     workspace_path=ws.root,
                     summary=summary,
                     diff=diff,
-                    changed_files=ws.list_files(),
+                    changed_files=ws.changed_paths(),
                 )
 
             # not passed → next iteration
@@ -477,7 +478,7 @@ async def run_cascade(
             workspace_path=ws.root,
             summary=summary,
             diff=ws.diff(),
-            changed_files=ws.list_files(),
+            changed_files=ws.changed_paths(),
         )
 
     finally:

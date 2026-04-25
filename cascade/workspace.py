@@ -254,6 +254,21 @@ class Workspace:
         out = self._git(["ls-files"]).stdout
         return [line for line in out.splitlines() if line]
 
+    def changed_paths(self) -> list[str]:
+        """Return only the paths Cascade actually touched this run.
+
+        - Attached repo: diff vs `base_ref` (HEAD-at-attach-time). This excludes
+          everything the user already had — venvs, caches, pre-existing files.
+        - Detached/fresh workspace: diff vs HEAD (the initial 'init' commit).
+        """
+        if self.is_attached and self.base_ref:
+            self.stage_all()
+            out = self._git(["diff", "--cached", "--name-only", self.base_ref]).stdout
+        else:
+            self.stage_all()
+            out = self._git(["diff", "--cached", "--name-only", "HEAD"]).stdout
+        return [line for line in out.splitlines() if line]
+
     def read_files(
         self,
         paths: list[str],

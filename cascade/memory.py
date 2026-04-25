@@ -109,6 +109,38 @@ async def remember_fact(content: str, **kw: Any) -> bool:
     return await remember_finding(content, category="fact", **kw)
 
 
+async def cleanup_old_entries(*, retention_days: int = 90) -> int:
+    """Trim the memory.jsonl: drop entries older than retention_days.
+    Returns count removed. No-op if file doesn't exist."""
+    path = _memory_path()
+    if not path.exists():
+        return 0
+
+    def _do() -> int:
+        cutoff = time.time() - retention_days * 86400
+        kept: list[str] = []
+        removed = 0
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        e = json.loads(line)
+                    except Exception:
+                        kept.append(line.rstrip("\n"))
+                        continue
+                    if (e.get("ts") or 0) >= cutoff:
+                        kept.append(line.rstrip("\n"))
+                    else:
+                        removed += 1
+            if removed:
+                path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+        except Exception as e:
+            log.warning("memory cleanup failed: %s", e)
+        return removed
+
+    return await asyncio.to_thread(_do)
+
+
 async def recall_context(task: str, *, limit: int = 3) -> str | None:
     """Look up recent memory entries whose tags or content overlap with the
     task. Returns a short bullet-list of recalls, or None if nothing useful.
