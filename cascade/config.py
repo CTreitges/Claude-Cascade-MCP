@@ -46,6 +46,8 @@ class Settings(BaseSettings):
 
     cascade_planner_model: str = "claude-opus-4-7"
     cascade_reviewer_model: str = "claude-sonnet-4-6"
+    cascade_triage_model: str = "claude-haiku-4-5"
+    cascade_triage_enabled: bool = True
 
     cascade_home: Path = Field(default_factory=lambda: Path.home() / "claude-cascade")
     cascade_max_iterations: int = 3

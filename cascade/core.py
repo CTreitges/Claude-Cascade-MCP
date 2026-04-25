@@ -72,6 +72,8 @@ async def run_cascade(
     implementer_model: str | None = None,
     implementer_provider: str | None = None,
     implementer_tools: Literal["fileops", "mcp"] | None = None,
+    planner_model: str | None = None,
+    reviewer_model: str | None = None,
     progress: ProgressCallback = _noop,
     s: Settings | None = None,
     store: Store | None = None,
@@ -85,6 +87,13 @@ async def run_cascade(
     `cancel_event.set()` mid-run aborts cleanly between agent calls.
     """
     s = s or settings()
+    if planner_model or reviewer_model:
+        # Apply per-call overrides without mutating the shared singleton:
+        # build a derived Settings that the agents will receive.
+        s = s.model_copy(update={
+            **({"cascade_planner_model": planner_model} if planner_model else {}),
+            **({"cascade_reviewer_model": reviewer_model} if reviewer_model else {}),
+        })
     cancel_event = cancel_event or asyncio.Event()
     own_store = store is None
     if store is None:

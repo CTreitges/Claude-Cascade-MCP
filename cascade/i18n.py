@@ -123,6 +123,7 @@ _STRINGS: dict[str, dict[Lang, str]] = {
             "/exec <cmd>    — Shell-Befehl ausführen (60s, 4kB-Cap)\n"
             "/git <repo> <subcmd …>  — git auf einem Pfad (Whitelist)\n"
             "/lang <de|en>  — Bot-Sprache umstellen\n"
+            "/models        — Modell pro Worker (Planner/Implementer/Reviewer) wählen\n"
             "/help          — diese Übersicht"
         ),
         "en": (
@@ -137,6 +138,7 @@ _STRINGS: dict[str, dict[Lang, str]] = {
             "/exec <cmd>    — run shell command (60s, 4kB cap)\n"
             "/git <repo> <subcmd …>  — git on a path (whitelist)\n"
             "/lang <de|en>  — switch bot language\n"
+            "/models        — choose model per worker (Planner/Implementer/Reviewer)\n"
             "/help          — this message"
         ),
     },

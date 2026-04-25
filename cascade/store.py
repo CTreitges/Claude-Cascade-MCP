@@ -65,9 +65,19 @@ CREATE TABLE IF NOT EXISTS sessions (
     chat_id     INTEGER PRIMARY KEY,
     repo_path   TEXT,
     last_task_id TEXT,
+    planner_model TEXT,
+    implementer_model TEXT,
+    reviewer_model TEXT,
     updated_at  REAL NOT NULL
 );
 """
+
+# Best-effort additive migration for existing DBs.
+_MIGRATIONS = [
+    "ALTER TABLE sessions ADD COLUMN planner_model TEXT",
+    "ALTER TABLE sessions ADD COLUMN implementer_model TEXT",
+    "ALTER TABLE sessions ADD COLUMN reviewer_model TEXT",
+]
 
 
 @dataclass
@@ -137,6 +147,11 @@ class Store:
         conn = await aiosqlite.connect(path)
         conn.row_factory = aiosqlite.Row
         await conn.executescript(SCHEMA)
+        for stmt in _MIGRATIONS:
+            try:
+                await conn.execute(stmt)
+            except Exception:
+                pass  # column already exists
         await conn.commit()
         return cls(conn)
 
@@ -350,6 +365,25 @@ class Store:
                 (chat_id, task_id, time.time()),
             )
 
+    async def set_chat_model(
+        self,
+        chat_id: int,
+        worker: str,  # "planner" | "implementer" | "reviewer"
+        model: str | None,
+    ) -> None:
+        if worker not in ("planner", "implementer", "reviewer"):
+            raise ValueError(f"unknown worker: {worker}")
+        col = f"{worker}_model"
+        async with self._tx() as c:
+            await c.execute(
+                f"""INSERT INTO sessions (chat_id, {col}, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(chat_id) DO UPDATE SET
+                      {col} = excluded.{col},
+                      updated_at = excluded.updated_at""",
+                (chat_id, model, time.time()),
+            )
+
     async def get_chat_session(self, chat_id: int) -> dict[str, Any] | None:
         async with self._conn.execute(
             "SELECT * FROM sessions WHERE chat_id = ?", (chat_id,)
@@ -361,5 +395,8 @@ class Store:
             "chat_id": row["chat_id"],
             "repo_path": row["repo_path"],
             "last_task_id": row["last_task_id"],
+            "planner_model": row["planner_model"],
+            "implementer_model": row["implementer_model"],
+            "reviewer_model": row["reviewer_model"],
             "updated_at": row["updated_at"],
         }

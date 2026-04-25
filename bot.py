@@ -18,10 +18,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from telegram import Message, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -31,7 +32,14 @@ from telegram.ext import (
 from cascade.config import settings
 from cascade.core import maintenance, run_cascade
 from cascade.i18n import t
+from cascade.models import (
+    IMPLEMENTER_MODELS,
+    PLANNER_REVIEWER_MODELS,
+    implementer_display,
+    implementer_provider,
+)
 from cascade.store import Store
+from cascade.triage import triage
 
 log = logging.getLogger("cascade.bot")
 
@@ -102,6 +110,10 @@ async def _run_task_for_chat(
     store: Store = ctx.application.bot_data["store"]
     sess = await store.get_chat_session(chat.id) if chat else None
     repo = Path(sess["repo_path"]) if sess and sess.get("repo_path") else None
+    impl_model = (sess or {}).get("implementer_model")
+    impl_provider = implementer_provider(impl_model) if impl_model else None
+    plan_model = (sess or {}).get("planner_model")
+    rev_model = (sess or {}).get("reviewer_model")
 
     lang = _lang(update)
     initial = t("progress.planning_initial", lang=lang)
@@ -128,6 +140,10 @@ async def _run_task_for_chat(
         source="telegram",
         repo=repo,
         attachments=attachments,
+        implementer_model=impl_model,
+        implementer_provider=impl_provider,
+        planner_model=plan_model,
+        reviewer_model=rev_model,
         progress=progress,
         s=s,
         store=store,
@@ -214,6 +230,86 @@ async def cmd_help(update: Update, _ctx) -> None:
     if not await _owner_only(update, _ctx):
         return
     await update.effective_message.reply_text(t("help", lang=_lang(update)), parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_models(update: Update, ctx) -> None:
+    if not await _owner_only(update, ctx):
+        return
+    lang = _lang(update)
+    store: Store = ctx.application.bot_data["store"]
+    sess = await store.get_chat_session(update.effective_chat.id) or {}
+    s = settings()
+
+    cur_plan = sess.get("planner_model") or s.cascade_planner_model
+    cur_impl = sess.get("implementer_model") or s.cascade_implementer_model
+    cur_rev = sess.get("reviewer_model") or s.cascade_reviewer_model
+
+    if lang == "de":
+        header = (
+            "*Aktuelle Modell-Auswahl:*\n"
+            f"• Planner:     `{cur_plan}`\n"
+            f"• Implementer: `{cur_impl}`\n"
+            f"• Reviewer:    `{cur_rev}`\n\n"
+            "Welchen Worker willst du ändern?"
+        )
+        labels = {"planner": "🧠 Planner", "implementer": "🛠 Implementer", "reviewer": "🔍 Reviewer"}
+    else:
+        header = (
+            "*Current model selection:*\n"
+            f"• Planner:     `{cur_plan}`\n"
+            f"• Implementer: `{cur_impl}`\n"
+            f"• Reviewer:    `{cur_rev}`\n\n"
+            "Which worker do you want to change?"
+        )
+        labels = {"planner": "🧠 Planner", "implementer": "🛠 Implementer", "reviewer": "🔍 Reviewer"}
+
+    kb = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(labels["planner"], callback_data="m:w:planner")],
+            [InlineKeyboardButton(labels["implementer"], callback_data="m:w:implementer")],
+            [InlineKeyboardButton(labels["reviewer"], callback_data="m:w:reviewer")],
+        ]
+    )
+    await update.effective_message.reply_text(header, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+
+
+async def on_models_callback(update: Update, ctx) -> None:
+    if not await _owner_only(update, ctx):
+        return
+    q = update.callback_query
+    await q.answer()
+    data = q.data or ""
+    lang = _lang(update)
+    store: Store = ctx.application.bot_data["store"]
+    chat_id = update.effective_chat.id
+
+    if data.startswith("m:w:"):
+        worker = data.split(":", 2)[2]
+        if worker == "implementer":
+            choices = list(IMPLEMENTER_MODELS.items())  # [(tag,(display,provider)), …]
+            buttons = [
+                [InlineKeyboardButton(display, callback_data=f"m:s:{worker}:{tag}")]
+                for tag, (display, _prov) in choices
+            ]
+        else:
+            buttons = [
+                [InlineKeyboardButton(display, callback_data=f"m:s:{worker}:{tag}")]
+                for tag, display in PLANNER_REVIEWER_MODELS.items()
+            ]
+        prompt = (
+            f"Modell für *{worker}* wählen:" if lang == "de" else f"Pick model for *{worker}*:"
+        )
+        await q.edit_message_text(prompt, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if data.startswith("m:s:"):
+        _, _, worker, tag = data.split(":", 3)
+        await store.set_chat_model(chat_id, worker, tag)
+        confirm = (
+            f"✅ {worker} → `{tag}`" if lang == "de" else f"✅ {worker} → `{tag}`"
+        )
+        await q.edit_message_text(confirm, parse_mode=ParseMode.MARKDOWN)
+        return
 
 
 async def cmd_lang(update: Update, ctx) -> None:
@@ -448,7 +544,22 @@ async def on_text(update: Update, ctx) -> None:
     text = (update.effective_message.text or "").strip()
     if not text:
         return
-    await _run_task_for_chat(update, ctx, text)
+    lang = _lang(update)
+    s = settings()
+
+    # Smart triage: is this a task or just a conversation?
+    try:
+        verdict = await triage(text, lang=lang, s=s)
+    except Exception as e:
+        log.warning("triage crashed (%s) — treating as task", e)
+        await _run_task_for_chat(update, ctx, text)
+        return
+
+    if verdict.is_task:
+        await _run_task_for_chat(update, ctx, verdict.task or text)
+    else:
+        reply = verdict.reply or ("Ok." if lang == "de" else "Ok.")
+        await update.effective_message.reply_text(reply)
 
 
 async def on_voice(update: Update, ctx) -> None:
@@ -567,6 +678,8 @@ def main() -> None:
     app.add_handler(CommandHandler("exec", cmd_exec))
     app.add_handler(CommandHandler("git", cmd_git))
     app.add_handler(CommandHandler("lang", cmd_lang))
+    app.add_handler(CommandHandler("models", cmd_models))
+    app.add_handler(CallbackQueryHandler(on_models_callback, pattern=r"^m:"))
 
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, on_voice))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, on_photo_or_document))
