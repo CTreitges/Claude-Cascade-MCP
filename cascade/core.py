@@ -55,6 +55,7 @@ class CascadeResult:
     workspace_path: Path
     summary: str
     diff: str = ""
+    changed_files: list[str] = field(default_factory=list)
     cancelled: bool = False
     error: str | None = None
     metadata: dict = field(default_factory=dict)
@@ -257,6 +258,7 @@ async def run_cascade(
                     workspace_path=ws.root,
                     summary=summary,
                     diff=diff,
+                    changed_files=ws.list_files(),
                 )
 
             # not passed → next iteration
@@ -284,6 +286,7 @@ async def run_cascade(
             workspace_path=ws.root,
             summary=summary,
             diff=ws.diff(),
+            changed_files=ws.list_files(),
         )
 
     finally:

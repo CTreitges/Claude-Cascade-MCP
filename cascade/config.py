@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     cascade_triage_enabled: bool = True
 
     cascade_home: Path = Field(default_factory=lambda: Path.home() / "claude-cascade")
+    cascade_timezone: str = "Europe/Berlin"
     cascade_max_iterations: int = 3
     cascade_workspace_retention_days: int = 7
     cascade_db_path: Path = Field(

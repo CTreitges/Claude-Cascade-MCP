@@ -16,6 +16,7 @@ import shlex
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
@@ -56,6 +57,18 @@ def _lang(update: Update) -> str:
     if update.effective_chat and update.effective_chat.id in _LANG_OVERRIDE:
         return _LANG_OVERRIDE[update.effective_chat.id]
     return settings().cascade_bot_lang
+
+
+def _local_tz():
+    try:
+        return ZoneInfo(settings().cascade_timezone)
+    except ZoneInfoNotFoundError:
+        return None
+
+
+def _fmt_local(ts: float, fmt: str = "%H:%M:%S") -> str:
+    tz = _local_tz()
+    return datetime.fromtimestamp(ts, tz=tz).strftime(fmt)
 
 
 # ------------------------------------------------------------------ helpers
@@ -177,19 +190,43 @@ async def _run_task_for_chat(
     finally:
         _INFLIGHT.pop(chat.id, None)
 
-    await msg.reply_text(
-        t(
-            "result.summary",
-            lang=lang,
-            emoji=_fmt_status_emoji(result.status),
-            status=result.status,
-            task_id=result.task_id,
-            iterations=result.iterations,
-            workspace=result.workspace_path,
-            summary=result.summary,
-        ),
-        parse_mode=ParseMode.MARKDOWN,
+    # Rich final report: status header + plan summary + changed files + diff excerpt
+    header = t(
+        "result.summary",
+        lang=lang,
+        emoji=_fmt_status_emoji(result.status),
+        status=result.status,
+        task_id=result.task_id,
+        iterations=result.iterations,
+        workspace=result.workspace_path,
+        summary=result.summary,
     )
+    parts = [header]
+    if result.plan and result.plan.summary:
+        label = "*Plan:*" if lang == "de" else "*Plan:*"
+        parts.append(f"\n{label} {result.plan.summary[:400]}")
+    if result.changed_files:
+        label = "*Geänderte Dateien:*" if lang == "de" else "*Changed files:*"
+        files_block = "\n".join(f"  • `{f}`" for f in result.changed_files[:15])
+        more = (
+            f"\n  … +{len(result.changed_files) - 15} weitere"
+            if len(result.changed_files) > 15
+            else ""
+        )
+        parts.append(f"\n{label}\n{files_block}{more}")
+    full_msg = "\n".join(parts)
+    if len(full_msg) > 3800:
+        full_msg = full_msg[:3800] + "…"
+    await msg.reply_text(full_msg, parse_mode=ParseMode.MARKDOWN)
+
+    # Diff in a separate code-block message so it doesn't break parsing.
+    if result.diff and result.diff.strip():
+        diff_excerpt = result.diff[:3500]
+        diff_label = "Diff" if lang == "en" else "Diff"
+        await msg.reply_text(
+            f"```diff\n{diff_excerpt}\n```",
+            parse_mode=ParseMode.MARKDOWN,
+        )
 
 
 def _format_progress_line(event: str, payload: dict, lang: str = "de") -> str | None:
@@ -413,7 +450,7 @@ async def cmd_logs(update: Update, ctx) -> None:
         await update.effective_message.reply_text(t("no_logs", lang=lang))
         return
     text = "\n".join(
-        f"{datetime.fromtimestamp(e.ts):%H:%M:%S} [{e.level}] {e.message}" for e in entries
+        f"{_fmt_local(e.ts)} [{e.level}] {e.message}" for e in entries
     )
     await _send(update.effective_message, text, code=True)
 
@@ -580,9 +617,33 @@ async def on_text(update: Update, ctx) -> None:
     lang = _lang(update)
     s = settings()
 
-    # Smart triage: is this a task or just a conversation?
+    # Build short context of last 3 tasks so the conversation layer can answer
+    # follow-up questions like "was hast du gemacht?" or "wo liegt das?".
+    store: Store = ctx.application.bot_data["store"]
+    recent = await store.list_tasks(limit=3)
+    context_lines = []
+    for t in recent:
+        files_hint = ""
+        try:
+            iters = await store.list_iterations(t.id)
+            last = iters[-1] if iters else None
+            if last and last.diff_excerpt:
+                # Pull file names from "diff --git a/X b/X" lines
+                import re
+                files = sorted({m.group(1) for m in re.finditer(r"diff --git a/(\S+) ", last.diff_excerpt or "")})
+                if files:
+                    files_hint = f" files=[{', '.join(files[:6])}]"
+        except Exception:
+            pass
+        context_lines.append(
+            f"- task_id={t.id} status={t.status} iter={t.iteration} "
+            f"workspace={t.workspace_path or '—'} summary={(t.result_summary or '—')[:120]} "
+            f"task={(t.task_text or '')[:140]}{files_hint}"
+        )
+    context = "\n".join(context_lines) if context_lines else None
+
     try:
-        verdict = await triage(text, lang=lang, s=s)
+        verdict = await triage(text, lang=lang, s=s, context=context)
     except Exception as e:
         log.warning("triage crashed (%s) — treating as task", e)
         await _run_task_for_chat(update, ctx, text)

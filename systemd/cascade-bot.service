@@ -6,6 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/claude-cascade
+Environment=TZ=Europe/Berlin
 EnvironmentFile=%h/claude-cascade/.env
 ExecStart=%h/claude-cascade/.venv/bin/python %h/claude-cascade/bot.py
 Restart=on-failure
