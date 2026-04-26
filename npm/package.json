@@ -5,7 +5,7 @@
   "license": "MIT",
   "author": "Cascade-Bot Contributors",
   "bin": {
-    "cascade-bot-mcp": "./bin/cascade-bot-mcp.js"
+    "cascade-bot-mcp": "bin/cascade-bot-mcp.js"
   },
   "files": [
     "bin/",

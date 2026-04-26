@@ -115,9 +115,8 @@ python3 -m venv .venv
 # 2. interactive setup wizard (Telegram token, provider keys, …)
 .venv/bin/cascade-setup
 
-# 3. wire it into Claude Code
-claude mcp add cascade --scope user -- \
-  ~/cascade-bot-mcp/.venv/bin/python ~/cascade-bot-mcp/mcp_server.py
+# 3. wire it into Claude Code (one-liner via npx — no Python paths needed)
+claude mcp add cascade -- npx -y cascade-bot-mcp
 
 # 4. (optional) start the Telegram bot
 .venv/bin/python bot.py
@@ -128,6 +127,10 @@ claude mcp add cascade --scope user -- \
 That's it. `mcp__cascade__*` tools are now available in any Claude Code
 session, and the Telegram bot is a fully-featured chat partner with
 guided `/setup`, voice transcription, file uploads, etc.
+
+> The npx wrapper at <https://www.npmjs.com/package/cascade-bot-mcp>
+> just locates and launches the Python MCP server. The Python install
+> from step 1 is still required.
 
 ---
 
@@ -186,28 +189,33 @@ pwsh -File scripts/install-rlm-claude.ps1
 
 ### 4. Register the MCP server with Claude Code
 
-Three options — pick whichever you prefer:
+Three options — pick whichever you prefer.
 
-**A) Direct (no Node needed):**
+**A) Recommended: via npx wrapper** — published at
+[npmjs.com/package/cascade-bot-mcp](https://www.npmjs.com/package/cascade-bot-mcp).
+No Python paths to remember:
+
 ```bash
-claude mcp add cascade --scope user -- \
-  ~/cascade-bot-mcp/.venv/bin/python ~/cascade-bot-mcp/mcp_server.py
+claude mcp add cascade -- npx -y cascade-bot-mcp
 ```
 
-**B) Via the launcher script (auto-resolves venv / pipx):**
+The wrapper just locates the Python MCP server you installed in step 1
+(via `$CASCADE_HOME` → `.venv/bin/python` → fallback to `cascade-mcp` on
+PATH). The Python install is still required.
+
+**B) Via the launcher script** (no Node, auto-resolves venv / pipx):
+
 ```bash
 claude mcp add cascade --scope user -- \
   bash ~/cascade-bot-mcp/scripts/mcp-launcher.sh
 ```
 
-**C) Via npx wrapper (zero Python-path knowledge needed):**
-```bash
-claude mcp add cascade -- npx -y cascade-bot-mcp
-```
+**C) Direct, hard-coded paths** (most explicit, no resolution magic):
 
-> Option C only works once the npm package is published. See
-> [§ Publishing the npm wrapper](#publishing-the-npm-wrapper) below.
-> Until then, A and B are equivalent in functionality.
+```bash
+claude mcp add cascade --scope user -- \
+  ~/cascade-bot-mcp/.venv/bin/python ~/cascade-bot-mcp/mcp_server.py
+```
 
 ### 5. Run tests + smoke-test the CLI
 
@@ -247,49 +255,34 @@ forwards the install into the right distro for you.
 
 ---
 
-## Publishing the npm wrapper
+## Publishing the npm wrapper (maintainers)
 
-The `npm/` directory contains a tiny Node-based launcher that lets new
-users do `claude mcp add cascade -- npx -y cascade-bot-mcp` without
-needing to know any Python paths. The launcher is purely a delegator —
-the real MCP server is still Python.
+The `npm/` directory holds a tiny Node-based launcher published as
+[`cascade-bot-mcp`](https://www.npmjs.com/package/cascade-bot-mcp). It
+is purely a delegator — the real MCP server is still the Python module.
 
-To make `npx -y cascade-bot-mcp` work for everyone, publish the wrapper
-to npmjs.com once:
+To cut a new wrapper version:
 
-1. **Create an npm account** (one-time, free):
-   <https://www.npmjs.com/signup>
-
-2. **Login from the shell:**
-   ```bash
-   npm login
-   ```
-
-3. **Verify the package locally:**
-   ```bash
-   cd npm
-   node bin/cascade-bot-mcp.js   # should resolve & launch the python server
-   npm pack --dry-run             # what would be uploaded
-   ```
-
-4. **Publish (public scope):**
-   ```bash
-   cd npm
-   npm publish --access public
-   ```
-
-5. **(Optional) Future updates** — bump `version` in `npm/package.json`
-   first, then re-publish. npm refuses to overwrite a version, so
-   release-tag-style bumps are required.
-
-After step 4, anyone can install the MCP server with one command:
 ```bash
-claude mcp add cascade -- npx -y cascade-bot-mcp
+cd npm
+npm pkg fix              # silence the bin-name warning npm logs on publish
+npm pack --dry-run       # confirm: 4 files, ~6 KB unpacked
+npm version <patch|minor|major>
+npm publish --access public --otp=<6-digit-code-from-authenticator>
 ```
 
-The npx wrapper still expects the **Python** server to be reachable
-(`$CASCADE_HOME/.venv/...` or `cascade-mcp` on PATH). It just removes
-the need for users to type the exact path.
+If your npm account has 2FA on (recommended), you have two choices:
+
+- **Per-publish `--otp=<code>`** — fresh code from your authenticator
+  app, valid 30 s, single-use.
+- **Granular access token with "Bypass two-factor authentication when
+  publishing"** — generate at <https://www.npmjs.com/settings/~/tokens>,
+  store in `~/.npmrc` (chmod 600), then plain `npm publish --access
+  public` works. Note: only available when account 2FA is set to
+  "Authorization only", not "Authorization and writes".
+
+A `403 — Two-factor authentication ... is required` error means either
+the OTP was missing or the token was created without the bypass flag.
 
 ---
 
