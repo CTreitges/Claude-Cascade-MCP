@@ -26,8 +26,28 @@ operations to apply to the workspace. NEVER include prose outside the JSON,
 NEVER use markdown fences, NEVER assume a file exists unless it appears in the
 workspace listing.
 
+CRITICAL — YOU CANNOT READ FILES. There is NO `read` op. Files in the workspace
+that matter for this iteration ARE ALREADY in your prompt below under
+`EXISTING FILE CONTENTS`. Treat that section as your read-buffer:
+  - For audit / refactor tasks: open `EXISTING FILE CONTENTS`, identify what
+    needs changing, then emit `op=write` (full new file body) or `op=edit`
+    (find/replace) ops directly. DO NOT ask for file contents — they're
+    already there.
+  - If a file you need is NOT in `EXISTING FILE CONTENTS`, mention it in
+    `rationale` so the next planner round can pull it in. Then still emit
+    whatever ops you CAN do safely with what you have.
+  - NEVER respond with empty `ops: []` and a rationale of "I cannot proceed
+    without read access" — that's a guaranteed dead-end. Use the file
+    contents in your prompt.
+
 For "edit" ops, prefer find/replace with a unique 'find' string. If you must
 overwrite a file, use op="write" with the full new content.
+
+When a previous iteration's ops were rejected (visible as `OP FAILURES` in the
+feedback below), READ those failure messages — they tell you exactly what
+went wrong (path outside workspace, find-string-not-unique, syntax error,
+stub function detected, etc.). Adjust accordingly; do NOT just re-emit the
+same op.
 
 CRITICAL — DO NOT WRITE TO GENERATED ARTIFACTS. Files like `*.pyc`, `*.pyo`,
 `__pycache__/...`, `.so`, `node_modules/...`, `dist/`, `build/`, `.next/`,

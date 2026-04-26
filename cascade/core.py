@@ -557,10 +557,24 @@ async def run_cascade(
                         return await _fail(store, task_id, ws,
                                            f"implementer subtask={subtask.name} iter={sub_iter}", e, progress)
                     op_results = ws.apply_ops(impl.ops)
+                    failed_results = [r for r in op_results if not r.ok]
                     await _emit(progress, store, task_id, "implemented",
                                 {"iteration": cumulative_iter, "ops": len(impl.ops),
-                                 "failed": sum(1 for r in op_results if not r.ok),
+                                 "failed": len(failed_results),
                                  "subtask": subtask.name})
+                    # Make op-failures visible to the NEXT implementer call —
+                    # otherwise the implementer only sees the reviewer's
+                    # "empty diff" complaint and has no idea WHY its write
+                    # was rejected (path-validation, syntax, stub-detection,
+                    # find-string-not-unique, …). Without this signal it
+                    # often degrades into "no ops" loops.
+                    if failed_results:
+                        op_failure_block = "OP FAILURES (must address):\n" + "\n".join(
+                            f"  - {r.op} {r.path}: {r.detail}"
+                            for r in failed_results
+                        )
+                    else:
+                        op_failure_block = None
 
                     # quality checks (sub-plan's)
                     check_results = []
@@ -612,7 +626,15 @@ async def run_cascade(
                     if review.passed:
                         sub_ok = True
                         break
+                    # Stitch op-failure detail into the feedback the next
+                    # implementer call sees, so it understands WHY its
+                    # last write/edit was rejected.
                     sub_feedback = review.feedback
+                    if op_failure_block:
+                        sub_feedback = (
+                            f"{op_failure_block}\n\nREVIEWER:\n{review.feedback}"
+                            if review.feedback else op_failure_block
+                        )
                     sub_consec_fails += 1
 
                     # Sub-task local replan: if the sub-task has been stuck
@@ -1016,8 +1038,20 @@ async def run_cascade(
                     changed_files=ws.changed_paths(),
                 )
 
-            # not passed → next iteration
-            feedback = review.feedback
+            # not passed → next iteration. Stitch op-failure detail INTO
+            # feedback so the implementer's next call sees WHY its writes
+            # were rejected (path/syntax/stub). Without this it loops on
+            # an "empty diff" complaint and degrades to no-ops.
+            if failed_ops:
+                op_block = "OP FAILURES (must address):\n" + "\n".join(
+                    f"  - {r.op} {r.path}: {r.detail}" for r in failed_ops
+                )
+                feedback = (
+                    f"{op_block}\n\nREVIEWER:\n{review.feedback}"
+                    if review.feedback else op_block
+                )
+            else:
+                feedback = review.feedback
             consecutive_failures += 1
             await _emit(
                 progress,
