@@ -255,34 +255,53 @@ forwards the install into the right distro for you.
 
 ---
 
-## Publishing the npm wrapper (maintainers)
+## The npm wrapper (maintainers)
 
-The `npm/` directory holds a tiny Node-based launcher published as
+The `npm/` directory holds a Node-based launcher published as
 [`cascade-bot-mcp`](https://www.npmjs.com/package/cascade-bot-mcp). It
 is purely a delegator — the real MCP server is still the Python module.
+Users `npx`-it; you only touch this if you ship a new wrapper version.
 
-To cut a new wrapper version:
+### One-time setup of an npm publish token
+
+Plain `npm login` doesn't survive 2FA-strict accounts on a publish.
+Use a granular access token instead:
+
+1. <https://www.npmjs.com/settings/~/tokens> → **Generate New Token**
+   → **Granular Access Token**.
+2. Settings:
+   - **Packages and scopes:** `cascade-bot-mcp` (only).
+   - **Permissions:** `Read and write`.
+   - **Bypass two-factor authentication when publishing:** ✅ **enabled**.
+   - Expiration: 30–90 days.
+3. Drop the token into `~/.npmrc` (gitignored on a sane home setup):
+   ```bash
+   npm config set //registry.npmjs.org/:_authToken "npm_xxxxxxxxxx"
+   chmod 600 ~/.npmrc
+   ```
+
+### Cutting a new wrapper release
 
 ```bash
 cd npm
-npm pkg fix              # silence the bin-name warning npm logs on publish
-npm pack --dry-run       # confirm: 4 files, ~6 KB unpacked
-npm version <patch|minor|major>
-npm publish --access public --otp=<6-digit-code-from-authenticator>
+npm pack --dry-run                      # confirm contents (currently 4 files, ~6 KB)
+npm version <patch|minor|major>         # bumps npm/package.json + creates a git tag
+cd ..
+git push && git push --tags             # publish the version-bump commit + tag
+cd npm && npm publish --access public   # ships to registry.npmjs.org
 ```
 
-If your npm account has 2FA on (recommended), you have two choices:
+`--access public` is required: without it npm tries a private publish
+(which costs money and 403s on free accounts).
 
-- **Per-publish `--otp=<code>`** — fresh code from your authenticator
-  app, valid 30 s, single-use.
-- **Granular access token with "Bypass two-factor authentication when
-  publishing"** — generate at <https://www.npmjs.com/settings/~/tokens>,
-  store in `~/.npmrc` (chmod 600), then plain `npm publish --access
-  public` works. Note: only available when account 2FA is set to
-  "Authorization only", not "Authorization and writes".
+### Common publish errors
 
-A `403 — Two-factor authentication ... is required` error means either
-the OTP was missing or the token was created without the bypass flag.
+| Error | Cause | Fix |
+|---|---|---|
+| `403 ... bypass 2fa enabled is required` | Token created without "Bypass 2FA" flag, OR account 2FA is set to "Authorization and writes" | Re-create the token with the bypass checkbox; or fall back to `--otp=<6-digit-code>` per publish. |
+| `402 Payment Required` | `--access public` missing | add the flag |
+| `EPUBLISHCONFLICT <version> already exists` | npm forbids re-publishing the same version, even after `unpublish` | bump the version |
+| `ENOENT: package.json` | running `npm publish` outside `npm/` | `cd npm` first |
 
 ---
 
@@ -435,12 +454,10 @@ To cut a release:
    before the workflow existed (e.g. `v0.2.0`), use **Actions → Release
    → Run workflow** with the tag name as input.
 
-For the npm wrapper (`npm/`), bump the same version, then:
-
-```bash
-cd npm
-npm publish --access public
-```
+If the wrapper changed, ship a matching npm version too — see
+[§ The npm wrapper](#the-npm-wrapper-maintainers) above. Wrapper and
+Python releases version-bump independently; both currently sit at
+0.2.0 but only need to stay aligned at major releases.
 
 ---
 
