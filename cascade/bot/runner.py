@@ -462,11 +462,14 @@ async def run_task_for_chat(
             state["current_iter_idx"] = None
         try:
             from telegram.constants import ParseMode as _PM
-            await status_msg.edit_text(_render(), parse_mode=_PM.MARKDOWN)
+            # status_msg may have been replaced by the heartbeat — read
+            # whatever the *current* message is from state.
+            current = state.get("status_msg") or status_msg
+            await current.edit_text(_render(), parse_mode=_PM.MARKDOWN)
         except Exception:
             try:
-                # fall back to plain text if markdown parsing fails
-                await status_msg.edit_text(_render())
+                current = state.get("status_msg") or status_msg
+                await current.edit_text(_render())
             except Exception:
                 pass
 
@@ -510,11 +513,18 @@ async def run_task_for_chat(
     asyncio.create_task(register_when_known())
 
     HB_MARKER = "​"
-    # User preference (per resilient-gliding-lobster plan): 60-second
-    # heartbeat tick during active cascade. Only refreshes the line when
-    # idle > 30s so we don't spam edits when events are flowing.
+    # 60-second heartbeat. Behaviour change (user request 2026-04-27):
+    # instead of edit-in-place on the original status_msg (which scrolls
+    # off-screen as the user keeps chatting), the heartbeat REPOSTS the
+    # full status as a NEW Telegram message every interval AND deletes
+    # the previous one. Net effect: a single live-progress card that
+    # follows the bottom of the chat.
     HEARTBEAT_INTERVAL_S = 60
     HEARTBEAT_IDLE_THRESHOLD_S = 30
+    # `state["status_msg"]` is the *current* message holding the live
+    # progress card. The progress() callback above edits it; the
+    # heartbeat reposts it.
+    state["status_msg"] = status_msg
 
     async def heartbeat() -> None:
         spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -525,31 +535,45 @@ async def run_task_for_chat(
                 return
             now = asyncio.get_event_loop().time()
             idle = now - state.get("last_event_at", state["started_at"])
-            if idle < HEARTBEAT_IDLE_THRESHOLD_S:
-                # Events are flowing; don't add a heartbeat line on top of
-                # them — would look like double-noise.
-                continue
             elapsed = int(now - state["started_at"])
             mark = spinner[i % len(spinner)]
             i += 1
             phase = state.get("current_phase") or state.get("last_event") or "?"
+            if idle < HEARTBEAT_IDLE_THRESHOLD_S:
+                # Events are flowing — no need to repost yet, the original
+                # status_msg edits are still visible-ish.
+                continue
             if lang == "de":
                 tag = f"{HB_MARKER}  {mark} noch dran — *{phase}* ({elapsed}s)"
             else:
                 tag = f"{HB_MARKER}  {mark} still working — *{phase}* ({elapsed}s)"
+            lines = state["lines"]
+            if lines and lines[-1].startswith(HB_MARKER):
+                lines[-1] = tag
+            else:
+                lines.append(tag)
+
+            # Repost: send a fresh message with the current rendered
+            # status, then delete the old one. The new message becomes
+            # the new edit-target so subsequent progress() events
+            # update IT in place until the next 60s tick.
+            from telegram.constants import ParseMode as _PM
+            old = state["status_msg"]
             try:
-                lines = state["lines"]
-                if lines and lines[-1].startswith(HB_MARKER):
-                    lines[-1] = tag
-                else:
-                    lines.append(tag)
-                from telegram.constants import ParseMode as _PM
-                await status_msg.edit_text(_render(), parse_mode=_PM.MARKDOWN)
+                new = await msg.reply_text(_render(), parse_mode=_PM.MARKDOWN)
             except Exception:
+                # Markdown parse failed → plain text fallback
                 try:
-                    await status_msg.edit_text(_render())
+                    new = await msg.reply_text(_render())
                 except Exception:
-                    pass
+                    new = None
+            if new is None:
+                continue
+            state["status_msg"] = new
+            try:
+                await old.delete()
+            except Exception:
+                pass  # old message may already be gone — non-fatal
 
     hb_task = asyncio.create_task(heartbeat())
 
