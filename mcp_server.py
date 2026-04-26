@@ -217,6 +217,99 @@ async def cascade_history(limit: int = 10) -> list[dict]:
         await store.close()
 
 
+@mcp.tool()
+async def cascade_summary(task_id: str, include_diff: bool = False) -> dict:
+    """One-shot status + plan + changed-files + reviewer feedback + diff
+    excerpt for a cascade task. Used by the `/cascade` slash-command so
+    Claude Code only has to make a single MCP call after a run instead
+    of stitching cascade_status + cascade_logs + filesystem reads.
+
+    Args:
+      task_id: the run to inspect.
+      include_diff: when True, also include the FULL git diff (capped
+        at ~50 KB). Off by default — call cascade_logs(task_id) or read
+        the workspace files directly when you need the full thing.
+
+    Returns a dict with these keys (some may be missing on failure):
+      task_id, status, iteration, summary, workspace, created_at,
+      completed_at, plan {summary, steps, acceptance_criteria,
+      quality_checks, subtasks}, changed_files, recent_reviews
+      (list of {iteration, passed, feedback, severity}),
+      diff_excerpt (always — first ~6 KB of the cumulative diff),
+      diff (only when include_diff=True).
+    """
+    import json as _json
+    s = settings()
+    store = await Store.open(s.cascade_db_path)
+    try:
+        t = await store.get_task(task_id)
+        if t is None:
+            return {"error": "not found", "task_id": task_id}
+        out: dict = {
+            "task_id": t.id,
+            "status": t.status,
+            "iteration": t.iteration,
+            "summary": t.result_summary,
+            "workspace": t.workspace_path,
+            "created_at": t.created_at,
+            "completed_at": t.completed_at,
+        }
+        # Plan from iteration 0
+        try:
+            iters = await store.list_iterations(task_id)
+        except Exception:
+            iters = []
+        if iters and iters[0].n == 0 and iters[0].implementer_output:
+            try:
+                plan_data = _json.loads(iters[0].implementer_output)
+                out["plan"] = {
+                    "summary": plan_data.get("summary"),
+                    "steps": plan_data.get("steps", [])[:10],
+                    "acceptance_criteria": plan_data.get("acceptance_criteria", [])[:10],
+                    "quality_checks": [
+                        {"name": c.get("name"), "command": c.get("command")}
+                        for c in (plan_data.get("quality_checks") or [])[:8]
+                    ],
+                    "subtasks": [
+                        {"name": st.get("name"), "summary": (st.get("summary") or "")[:200]}
+                        for st in (plan_data.get("subtasks") or [])
+                    ],
+                }
+            except Exception:
+                pass
+        # Last 5 reviewer feedbacks (most-recent last)
+        reviews = []
+        for it in iters[-6:]:  # skip iter 0 (the plan) when present
+            if it.n == 0 or it.reviewer_pass is None:
+                continue
+            reviews.append({
+                "iteration": it.n,
+                "passed": bool(it.reviewer_pass),
+                "feedback": (it.reviewer_feedback or "")[:600],
+            })
+        if reviews:
+            out["recent_reviews"] = reviews
+        # Diff: cap aggressively so the MCP response stays tractable.
+        # Read the workspace's cumulative diff if it still exists on disk.
+        diff_text = ""
+        if t.workspace_path:
+            try:
+                from pathlib import Path as _Path
+                from cascade.workspace import Workspace
+                ws = Workspace.attach(_Path(t.workspace_path))
+                diff_text = ws.diff_cumulative(max_bytes=50_000)
+                out["changed_files"] = ws.changed_paths()
+            except Exception:
+                pass
+        if diff_text:
+            out["diff_excerpt"] = diff_text[:6000]
+            if include_diff:
+                out["diff"] = diff_text
+        return out
+    finally:
+        await store.close()
+
+
 def _result_dict(r) -> dict:
     return {
         "task_id": r.task_id,
