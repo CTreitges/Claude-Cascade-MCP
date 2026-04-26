@@ -11,14 +11,16 @@ import mcp_server
 
 
 def test_tool_registry_lists_all_tools():
-    """The MCP server exposes the documented tool surface (now 9 tools)."""
+    """The MCP server exposes the documented tool surface (now 11 tools)."""
     tools = list(mcp_server.mcp._tool_manager._tools.keys())
     expected = {
         "run_cascade_tool",
         "cascade_status",
         "cascade_logs",
+        "cascade_progress",
         "cascade_cancel",
         "cascade_history",
+        "cascade_summary",
         "cascade_resume",
         "cascade_dryrun",
         "cascade_skills_list",

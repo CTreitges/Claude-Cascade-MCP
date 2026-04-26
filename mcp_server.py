@@ -23,7 +23,7 @@ from cascade.core import run_cascade
 from cascade.store import Store
 
 log = logging.getLogger("cascade.mcp")
-mcp = FastMCP("claude-cascade")
+mcp = FastMCP("cascade-bot-mcp")
 
 # Per-process registry of currently-running tasks for cancel support.
 _RUNNING: dict[str, tuple[asyncio.Task, asyncio.Event]] = {}
@@ -61,7 +61,7 @@ async def run_cascade_tool(
         polling via cascade_status / cascade_logs.
       timeout_s: only used when sync=True.
       implementer_model: override the runtime default (qwen3-coder:480b);
-        e.g. "kimi-k2.6", "glm-5.1", "minimax-m2.7", "deepseek-v4-flash".
+        e.g. "kimi-k2.6", "glm-5.1", "minimax-m2.7", "deepseek-v3.2".
       planner_model / reviewer_model: override the Claude models for this run.
       planner_effort / reviewer_effort: claude-cli --effort flag.
       replan_max: how often the planner may rewrite the plan if the loop
@@ -217,6 +217,162 @@ async def cascade_history(limit: int = 10) -> list[dict]:
         await store.close()
 
 
+@mcp.tool()
+async def cascade_progress(
+    task_id: str,
+    after_ts: float = 0.0,
+    lang: str = "de",
+    n: int = 200,
+) -> dict:
+    """Render the latest progress events for a task as ready-to-display
+    milestone lines. Same formatter the Telegram bot uses, so the
+    `/cascade` slash-command shows IDENTICAL output.
+
+    Args:
+      task_id: the run to inspect.
+      after_ts: only return milestones logged after this unix-ts —
+        used as a cursor by the polling loop (pass `last_ts` from
+        the previous call). 0.0 = from the start.
+      lang: `"de"` or `"en"`. Defaults to German.
+      n: how many recent log entries to scan (max 500).
+
+    Returns:
+      {
+        "status": "<task status>",
+        "iteration": <int>,
+        "lines": [<rendered milestone line>, ...],
+        "last_ts": <highest ts in this batch>,
+        "task_id": <id>,
+      }
+    """
+    n = max(1, min(int(n), 500))
+    s = settings()
+    store = await Store.open(s.cascade_db_path)
+    try:
+        t = await store.get_task(task_id)
+        if t is None:
+            return {"error": "not found", "task_id": task_id}
+        entries = await store.tail_logs(task_id, n=n)
+    finally:
+        await store.close()
+
+    from cascade.progress_format import format_milestone, parse_log_message
+    out_lines: list[str] = []
+    last_ts = float(after_ts)
+    for e in entries:
+        if e.ts <= after_ts:
+            continue
+        if e.ts > last_ts:
+            last_ts = e.ts
+        parsed = parse_log_message(e.message)
+        if not parsed:
+            continue
+        event, payload = parsed
+        for line in format_milestone(event, payload, lang=lang):
+            if line:
+                out_lines.append(line)
+    return {
+        "task_id": task_id,
+        "status": t.status,
+        "iteration": t.iteration,
+        "lines": out_lines,
+        "last_ts": last_ts,
+    }
+
+
+@mcp.tool()
+async def cascade_summary(task_id: str, include_diff: bool = False) -> dict:
+    """One-shot status + plan + changed-files + reviewer feedback + diff
+    excerpt for a cascade task. Used by the `/cascade` slash-command so
+    Claude Code only has to make a single MCP call after a run instead
+    of stitching cascade_status + cascade_logs + filesystem reads.
+
+    Args:
+      task_id: the run to inspect.
+      include_diff: when True, also include the FULL git diff (capped
+        at ~50 KB). Off by default — call cascade_logs(task_id) or read
+        the workspace files directly when you need the full thing.
+
+    Returns a dict with these keys (some may be missing on failure):
+      task_id, status, iteration, summary, workspace, created_at,
+      completed_at, plan {summary, steps, acceptance_criteria,
+      quality_checks, subtasks}, changed_files, recent_reviews
+      (list of {iteration, passed, feedback, severity}),
+      diff_excerpt (always — first ~6 KB of the cumulative diff),
+      diff (only when include_diff=True).
+    """
+    import json as _json
+    s = settings()
+    store = await Store.open(s.cascade_db_path)
+    try:
+        t = await store.get_task(task_id)
+        if t is None:
+            return {"error": "not found", "task_id": task_id}
+        out: dict = {
+            "task_id": t.id,
+            "status": t.status,
+            "iteration": t.iteration,
+            "summary": t.result_summary,
+            "workspace": t.workspace_path,
+            "created_at": t.created_at,
+            "completed_at": t.completed_at,
+        }
+        # Plan from iteration 0
+        try:
+            iters = await store.list_iterations(task_id)
+        except Exception:
+            iters = []
+        if iters and iters[0].n == 0 and iters[0].implementer_output:
+            try:
+                plan_data = _json.loads(iters[0].implementer_output)
+                out["plan"] = {
+                    "summary": plan_data.get("summary"),
+                    "steps": plan_data.get("steps", [])[:10],
+                    "acceptance_criteria": plan_data.get("acceptance_criteria", [])[:10],
+                    "quality_checks": [
+                        {"name": c.get("name"), "command": c.get("command")}
+                        for c in (plan_data.get("quality_checks") or [])[:8]
+                    ],
+                    "subtasks": [
+                        {"name": st.get("name"), "summary": (st.get("summary") or "")[:200]}
+                        for st in (plan_data.get("subtasks") or [])
+                    ],
+                }
+            except Exception:
+                pass
+        # Last 5 reviewer feedbacks (most-recent last)
+        reviews = []
+        for it in iters[-6:]:  # skip iter 0 (the plan) when present
+            if it.n == 0 or it.reviewer_pass is None:
+                continue
+            reviews.append({
+                "iteration": it.n,
+                "passed": bool(it.reviewer_pass),
+                "feedback": (it.reviewer_feedback or "")[:600],
+            })
+        if reviews:
+            out["recent_reviews"] = reviews
+        # Diff: cap aggressively so the MCP response stays tractable.
+        # Read the workspace's cumulative diff if it still exists on disk.
+        diff_text = ""
+        if t.workspace_path:
+            try:
+                from pathlib import Path as _Path
+                from cascade.workspace import Workspace
+                ws = Workspace.attach(_Path(t.workspace_path))
+                diff_text = ws.diff_cumulative(max_bytes=50_000)
+                out["changed_files"] = ws.changed_paths()
+            except Exception:
+                pass
+        if diff_text:
+            out["diff_excerpt"] = diff_text[:6000]
+            if include_diff:
+                out["diff"] = diff_text
+        return out
+    finally:
+        await store.close()
+
+
 def _result_dict(r) -> dict:
     return {
         "task_id": r.task_id,
@@ -352,7 +508,8 @@ async def cascade_skill_run(
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    from cascade.logging_config import setup_logging
+    setup_logging()
     mcp.run()
 
 

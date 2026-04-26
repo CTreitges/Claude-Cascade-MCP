@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -7,9 +8,37 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _resolve_env_files() -> tuple[str, ...]:
+    """Layer multiple env files. Pydantic loads them in order with later
+    files taking precedence over earlier — so we put the user-editable
+    `.env` first and the wizard-managed `secrets.env` last.
+
+    `secrets.env` is gitignored (see `.gitignore`) and is the file the
+    `/setup` wizard writes to. That way the user's hand-edited `.env`
+    is never overwritten by the wizard.
+
+    The secrets file lives at `<CASCADE_HOME>/secrets.env` (auto-created
+    by the wizard); we ALSO accept a top-level `secrets.env` for users
+    who prefer their secrets in the repo dir during local dev.
+    """
+    out = [".env"]
+    home = os.environ.get("CASCADE_HOME") or str(Path.home() / "claude-cascade")
+    candidates = [
+        Path("secrets.env"),                      # repo-root override
+        Path(home) / "secrets.env",               # default secrets path
+    ]
+    for c in candidates:
+        try:
+            if c.is_file():
+                out.append(str(c))
+        except Exception:
+            continue
+    return tuple(out)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_resolve_env_files(),
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
@@ -44,6 +73,28 @@ class Settings(BaseSettings):
 
     openai_api_key: str = ""
 
+    # Brave Search (Web). Enable by setting BRAVE_SEARCH_API_KEY in .env;
+    # without a key the cascade still works, just without live web results.
+    brave_search_api_key: str = ""
+
+    # On-demand external context fetching. cascade.research.gather_external_context
+    # consults these flags before reaching out.
+    cascade_context7_enabled: bool = True
+    cascade_websearch_enabled: bool = True
+
+    # When the bot starts and finds tasks in 'running' state (= the previous
+    # process was killed mid-run), automatically resume them after a grace
+    # period. Disable by setting CASCADE_AUTO_RESUME_INTERRUPTED=false.
+    cascade_auto_resume_interrupted: bool = True
+
+    # When the planner thinks a task is multi-component, let it emit
+    # `subtasks` and have the supervisor run them sequentially on the shared
+    # workspace. Set to False to force single-shot mode.
+    cascade_auto_decompose: bool = True
+    # Hard ceiling on how many sub-tasks the planner may emit. The planner
+    # gets told this number; if it exceeds, supervisor truncates.
+    cascade_max_subtasks: int = 6
+
     cascade_planner_model: str = "claude-opus-4-7"
     cascade_reviewer_model: str = "claude-sonnet-4-6"
     cascade_triage_model: str = "claude-sonnet-4-6"
@@ -53,14 +104,26 @@ class Settings(BaseSettings):
     cascade_planner_effort: str = ""
     cascade_reviewer_effort: str = ""
     cascade_triage_effort: str = ""
+    # Only honored when the implementer model is a Claude tag; silently
+    # dropped for Ollama models which don't have an effort knob.
+    cascade_implementer_effort: str = ""
 
     cascade_home: Path = Field(default_factory=lambda: Path.home() / "claude-cascade")
     cascade_timezone: str = "Europe/Berlin"
-    cascade_max_iterations: int = 5
+    # Iteration cap — set to UNLIMITED_SENTINEL (999) by default per user
+    # decision: only LLM-usage / rate-limit budget should stop a run, not an
+    # arbitrary count. The per-chat /iterations command can still pin a
+    # tighter cap for debugging. Stagnation-detection in core.py prevents
+    # endless identical-diff loops independent of this number.
+    cascade_max_iterations: int = 999
     # When the implementer-reviewer loop gets stuck (same check/feedback failing
     # repeatedly), invoke the planner again with the failure history so it can
-    # rewrite the plan and quality_checks.
+    # rewrite the plan and quality_checks. Configurable via /failsbeforereplan.
     cascade_replan_after_failures: int = 2
+    # Hard ceiling on how many full replan rounds a single run may trigger —
+    # this DOES stay capped (different from iterations) because each replan
+    # restarts the planner LLM call, which is the expensive part. Configurable
+    # via /replan.
     cascade_replan_max: int = 2
     # When True, after every successful run the planner is asked whether
     # the task pattern is worth saving as a reusable skill. Suggestions
@@ -71,6 +134,19 @@ class Settings(BaseSettings):
     cascade_db_path: Path = Field(
         default_factory=lambda: Path.home() / "claude-cascade" / "store" / "cascade.db"
     )
+    # Verbose logging — when True, every layer logs at DEBUG and a rotating
+    # file handler under store/debug.log captures the firehose. Used during
+    # post-mortem of stuck cascades or weird triage decisions.
+    cascade_debug: bool = False
+    # Background chat-summariser: condenses old messages into chat_summaries
+    # rows so build_context() can carry long-term anchors without dumping
+    # raw history into every prompt. Disable to keep messages verbatim.
+    cascade_summarize_enabled: bool = True
+    cascade_summarize_tick_s: int = 6 * 3600
+    # Multi-plan voting: produce 2 plans in parallel (different temperatures)
+    # and let a Sonnet picker choose the better one before the loop starts.
+    # Doubles planner cost — off by default. Per-chat /multiplan toggle.
+    cascade_multiplan_enabled: bool = False
 
     @property
     def workspaces_dir(self) -> Path:

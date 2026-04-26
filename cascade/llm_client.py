@@ -61,6 +61,8 @@ async def implementer_chat(
     json_schema_hint: str | None = None,
     model: str | None = None,
     provider: str | None = None,
+    effort: str | None = None,
+    temperature: float | None = None,
     s: Settings | None = None,
     timeout_s: float = 600,
 ) -> LLMReply:
@@ -68,16 +70,132 @@ async def implementer_chat(
     provider = provider or s.cascade_implementer_provider
     model = model or s.cascade_implementer_model
     messages = _build_messages(system=system, user=user, json_schema_hint=json_schema_hint)
+    from .rate_limit import with_retry
 
-    if provider == "ollama":
-        return await _ollama_chat(model=model, messages=messages, s=s, timeout_s=timeout_s)
-    if provider == "openai_compatible":
-        return await _openai_compat_chat(model=model, messages=messages, s=s, timeout_s=timeout_s)
-    raise LLMClientError(f"Unknown implementer provider: {provider!r}")
+    async def _call():
+        if provider == "ollama":
+            return await _ollama_chat(
+                model=model, messages=messages, s=s, timeout_s=timeout_s, temperature=temperature,
+            )
+        if provider == "openai_compatible":
+            return await _openai_compat_chat(
+                model=model, messages=messages, s=s, timeout_s=timeout_s,
+            )
+        if provider == "claude":
+            return await _claude_chat(
+                model=model, messages=messages, s=s, timeout_s=timeout_s, effort=effort,
+            )
+        raise LLMClientError(f"Unknown implementer provider: {provider!r}")
+
+    return await with_retry(_call, label=f"implementer/{provider}")
+
+
+async def _claude_chat(
+    *, model: str, messages: list[dict[str, str]], s: Settings,
+    timeout_s: float, effort: str | None = None,
+) -> LLMReply:
+    """Run the Implementer via the local `claude` CLI (Max-Subscription auth).
+    Useful when the user picks Sonnet or Opus as the implementer model."""
+    from .claude_cli import ClaudeCliError, claude_call
+
+    system = next((m["content"] for m in messages if m["role"] == "system"), "")
+    user = next((m["content"] for m in messages if m["role"] == "user"), "")
+    try:
+        result = await claude_call(
+            prompt=user,
+            model=model,
+            system_prompt=system,
+            output_json=True,
+            effort=effort,
+            timeout_s=int(timeout_s),
+        )
+    except ClaudeCliError as e:
+        raise LLMClientError(f"claude implementer call failed: {e}") from e
+    return LLMReply(text=result.text, model=model, provider="claude", usage=None)
+
+
+async def agent_chat(
+    *,
+    prompt: str,
+    model: str,
+    system_prompt: str,
+    output_json: bool = True,
+    effort: str | None = None,
+    temperature: float | None = None,
+    attachments: list | None = None,
+    timeout_s: float = 600,
+    s: Settings | None = None,
+    retry_max_total_wait_s: float | None = None,
+    retry_min_backoff_s: float | None = None,
+    retry_max_backoff_s: float | None = None,
+) -> str:
+    """Provider-aware single-shot LLM call for Planner / Reviewer / Triage.
+    Returns the raw text reply (caller parses JSON itself).
+
+    Routes by model tag: Claude tags → `claude_cli.claude_call()`, everything
+    else → Ollama Cloud. `effort` and `attachments` are Claude-only — silently
+    ignored on the Ollama path (with a debug log).
+
+    Retry tuning: pass `retry_max_total_wait_s` to cap total wait (default
+    12h is meant for cascade-internal calls; UX-facing triage should use
+    something tighter like 180s). `retry_min_backoff_s` (default 30s)
+    controls the first-retry sleep — triage often wants 10s here.
+    """
+    s = s or settings()
+    is_claude = model.startswith("claude-")
+    from .rate_limit import with_retry
+
+    retry_kwargs: dict = {}
+    if retry_max_total_wait_s is not None:
+        retry_kwargs["max_total_wait_s"] = retry_max_total_wait_s
+    if retry_min_backoff_s is not None:
+        retry_kwargs["min_backoff_s"] = retry_min_backoff_s
+    if retry_max_backoff_s is not None:
+        retry_kwargs["max_backoff_s"] = retry_max_backoff_s
+
+    if is_claude:
+        from .claude_cli import ClaudeCliError, claude_call
+
+        async def _claude():
+            try:
+                result = await claude_call(
+                    prompt=prompt,
+                    model=model,
+                    system_prompt=system_prompt,
+                    output_json=output_json,
+                    effort=effort,
+                    attachments=attachments,
+                    timeout_s=int(timeout_s),
+                )
+            except ClaudeCliError as e:
+                raise LLMClientError(f"claude agent call failed: {e}") from e
+            return result.text
+
+        return await with_retry(_claude, label=f"agent/{model}", **retry_kwargs)
+
+    if attachments:
+        import logging
+        logging.getLogger("cascade.llm_client").debug(
+            "agent_chat: dropping %d attachment(s) — model %r is not vision-capable in this code path",
+            len(attachments), model,
+        )
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": prompt},
+    ]
+
+    async def _ollama():
+        reply = await _ollama_chat(
+            model=model, messages=messages, s=s, timeout_s=timeout_s, temperature=temperature,
+        )
+        return reply.text
+
+    return await with_retry(_ollama, label=f"agent/{model}", **retry_kwargs)
 
 
 async def _ollama_chat(
-    *, model: str, messages: list[dict[str, str]], s: Settings, timeout_s: float
+    *, model: str, messages: list[dict[str, str]], s: Settings, timeout_s: float,
+    temperature: float | None = None,
 ) -> LLMReply:
     import ollama
 
@@ -91,7 +209,7 @@ async def _ollama_chat(
     # automatically if we over-shoot. Big context matters for the implementer
     # because we feed it FULL existing-file contents + plan + reviewer feedback.
     options = {
-        "temperature": 0.2,
+        "temperature": 0.2 if temperature is None else float(temperature),
         "num_ctx": implementer_ctx(model),
     }
 
@@ -104,6 +222,15 @@ async def _ollama_chat(
             options=options,
         )
     except Exception as e:
+        from .rate_limit import RateLimitError, is_rate_limit, parse_retry_after
+        msg = str(e)
+        # The ollama python client raises ollama.ResponseError for HTTP errors
+        # — its repr typically contains the status code + body.
+        if is_rate_limit(msg) or getattr(e, "status_code", None) in (429, 529, 503):
+            raise RateLimitError(
+                f"Ollama Cloud rate-limit / overloaded: {msg[:300]}",
+                retry_after=parse_retry_after(msg),
+            ) from e
         raise LLMClientError(f"Ollama Cloud call failed: {e}") from e
 
     text = (resp.get("message") or {}).get("content", "")

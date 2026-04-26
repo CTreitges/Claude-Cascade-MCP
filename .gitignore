@@ -1,4 +1,23 @@
+# Local-only secrets and runtime config
 .env
+.env.local
+secrets.env
+*.secrets.env
+
+# Per-machine cascade home / runtime artifacts
+store/*.db
+store/*.db-journal
+store/*.log
+store/*.jsonl
+store/debug.log*
+store/telegram.log*
+store/errors.log*
+store/cascade_session.json
+
+# Per-task workspaces — always machine-local
+workspaces/
+
+# Python
 __pycache__/
 *.pyc
 .venv/
@@ -6,8 +25,8 @@ venv/
 *.egg-info/
 build/
 dist/
-store/*.db
-store/*.db-journal
-workspaces/
+
+# Tooling caches
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/

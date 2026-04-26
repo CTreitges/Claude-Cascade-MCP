@@ -120,3 +120,70 @@ async def test_chat_session_persists_repo_and_last_task(store: Store) -> None:
 async def test_chat_session_missing_returns_none(store: Store) -> None:
     sess = await store.get_chat_session(99)
     assert sess is None
+
+
+async def test_chat_messages_round_trip(store: Store) -> None:
+    await store.append_chat_message(7, "user", "hallo")
+    await store.append_chat_message(7, "bot", "hi")
+    await store.append_chat_message(7, "user", "was hast du gemacht?")
+    msgs = await store.recent_chat_messages(7, limit=10)
+    assert [m["role"] for m in msgs] == ["user", "bot", "user"]
+    assert msgs[0]["text"] == "hallo"
+    assert msgs[-1]["text"] == "was hast du gemacht?"
+
+
+async def test_chat_messages_isolated_per_chat(store: Store) -> None:
+    await store.append_chat_message(1, "user", "a")
+    await store.append_chat_message(2, "user", "b")
+    one = await store.recent_chat_messages(1)
+    two = await store.recent_chat_messages(2)
+    assert [m["text"] for m in one] == ["a"]
+    assert [m["text"] for m in two] == ["b"]
+
+
+async def test_chat_messages_prune_to_max_keep(store: Store) -> None:
+    for i in range(8):
+        await store.append_chat_message(5, "user", f"m{i}", max_keep=3)
+    msgs = await store.recent_chat_messages(5, limit=10)
+    assert [m["text"] for m in msgs] == ["m5", "m6", "m7"]
+
+
+async def test_chat_messages_clear(store: Store) -> None:
+    await store.append_chat_message(11, "user", "a")
+    await store.append_chat_message(11, "bot", "b")
+    n = await store.clear_chat_messages(11)
+    assert n == 2
+    assert await store.recent_chat_messages(11) == []
+
+
+async def test_chat_messages_empty_text_ignored(store: Store) -> None:
+    await store.append_chat_message(3, "user", "")
+    await store.append_chat_message(3, "user", "   ")
+    assert await store.recent_chat_messages(3) == []
+
+
+async def test_chat_messages_invalid_role_raises(store: Store) -> None:
+    with pytest.raises(ValueError):
+        await store.append_chat_message(3, "system", "x")
+
+
+async def test_chat_question_round_trip(store: Store) -> None:
+    qid = await store.create_chat_question(7, "approve plan?", task_id="abc")
+    pending = await store.get_pending_question(7)
+    assert pending and pending["id"] == qid
+    assert pending["question"] == "approve plan?"
+    assert pending["answered_at"] is None
+    await store.answer_chat_question(qid, "yes go ahead")
+    pending2 = await store.get_pending_question(7)
+    assert pending2 is None  # no longer pending
+    row = await store.get_question(qid)
+    assert row and row["answer"] == "yes go ahead"
+    assert row["answered_at"] is not None
+
+
+async def test_chat_question_expire(store: Store) -> None:
+    qid = await store.create_chat_question(7, "?")
+    await store.expire_chat_question(qid)
+    assert await store.get_pending_question(7) is None
+    row = await store.get_question(qid)
+    assert row and row["expired_at"] is not None and row["answered_at"] is None

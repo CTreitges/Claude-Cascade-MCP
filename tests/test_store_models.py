@@ -42,6 +42,12 @@ async def test_set_chat_model_rejects_unknown_worker(store: Store) -> None:
         await store.set_chat_model(1, "executor", "x")
 
 
+async def test_set_chat_model_accepts_chat_worker(store: Store) -> None:
+    await store.set_chat_model(42, "chat", "claude-haiku-4-5")
+    sess = await store.get_chat_session(42)
+    assert sess["chat_model"] == "claude-haiku-4-5"
+
+
 async def test_session_includes_model_keys_when_only_repo_set(store: Store) -> None:
     await store.set_chat_repo(7, "/tmp/repo")
     sess = await store.get_chat_session(7)

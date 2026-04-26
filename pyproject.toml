@@ -3,12 +3,12 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "claude-cascade"
-version = "0.1.0"
+name = "cascade-bot-mcp"
+version = "0.2.0"
 description = "Multi-agent Plan→Implement→Review loop with MCP + Telegram interfaces."
 readme = "README.md"
 requires-python = ">=3.11"
-authors = [{ name = "Christof Treitges" }]
+authors = [{ name = "Cascade-Bot Contributors" }]
 dependencies = [
   "anthropic>=0.40",
   "ollama>=0.4",
@@ -33,9 +33,15 @@ dev = [
 cascade = "cascade.core:cli_main"
 cascade-bot = "bot:main"
 cascade-mcp = "mcp_server:main"
+cascade-setup = "cascade.setup_cli:main"
 
 [tool.setuptools]
-packages = ["cascade", "cascade.agents"]
+packages = [
+  "cascade",
+  "cascade.agents",
+  "cascade.bot",
+  "cascade.bot.handlers",
+]
 py-modules = ["bot", "mcp_server"]
 
 [tool.pytest.ini_options]

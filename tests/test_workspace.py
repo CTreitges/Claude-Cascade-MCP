@@ -109,6 +109,25 @@ def test_commit_iteration_starts_clean_for_next_diff(ws: Workspace) -> None:
     assert "b.txt" in diff2 and "a.txt" not in diff2
 
 
+def test_diff_cumulative_includes_all_committed_iters(ws: Workspace) -> None:
+    """The supervisor's integration review needs to see EVERY file the run
+    produced, not just the last sub-task's delta. Pre-fix this returned ''.
+    """
+    ws.apply_ops([FileOp(op="write", path="a.txt", content="A\n")])
+    ws.commit_iteration(1)
+    ws.apply_ops([FileOp(op="write", path="b.txt", content="B\n")])
+    ws.commit_iteration(2)
+    ws.apply_ops([FileOp(op="write", path="c.txt", content="C\n")])  # uncommitted
+    cum = ws.diff_cumulative()
+    # All three files must appear in the cumulative diff.
+    assert "a.txt" in cum
+    assert "b.txt" in cum
+    assert "c.txt" in cum
+    # Per-iter diff should still only show the latest staged change.
+    assert "c.txt" in ws.diff()
+    assert "a.txt" not in ws.diff()
+
+
 def test_list_files(ws: Workspace) -> None:
     ws.apply_ops(
         [
@@ -155,12 +174,34 @@ def test_cleanup_handles_missing_dir(tmp_path: Path) -> None:
     assert removed == 0
 
 
-def test_attach_does_not_modify_existing_repo(tmp_path: Path) -> None:
-    # Pre-existing dir without git
+def test_create_is_idempotent_when_dir_exists(tmp_path: Path) -> None:
+    """Pre-existing workspace dir must not crash create() — fixes a
+    FileExistsError seen on resumed/retried spawns."""
+    base = tmp_path / "ws-base"
+    base.mkdir()
+    (base / "preexisting-id").mkdir()
+    (base / "preexisting-id" / "marker.txt").write_text("kept")
+    ws = Workspace.create(base, task_id="preexisting-id")
+    assert ws.root == (base / "preexisting-id").resolve()
+    # User-pre-existing file untouched, git was bootstrapped:
+    assert (base / "preexisting-id" / "marker.txt").read_text() == "kept"
+    assert (base / "preexisting-id" / ".git").exists()
+    # Second call on same id should not crash either
+    ws2 = Workspace.create(base, task_id="preexisting-id")
+    assert ws2.root == ws.root
+
+
+def test_attach_preserves_user_files_and_bootstraps_git(tmp_path: Path) -> None:
+    # Pre-existing dir without git: attach now bootstraps a local .git
+    # so diffs work, but user files stay byte-identical.
     repo = tmp_path / "existing"
     repo.mkdir()
     (repo / "keep.txt").write_text("keep")
     ws = Workspace.attach(repo)
     assert ws.root == repo.resolve()
-    assert not (repo / ".git").exists()  # attach didn't init
-    assert (repo / "keep.txt").read_text() == "keep"
+    assert (repo / ".git").exists()  # bootstrap so changed_paths() works
+    assert (repo / "keep.txt").read_text() == "keep"  # user file untouched
+    assert ws.is_attached is True
+    assert ws.base_ref is not None
+    # changed_paths is empty right after attach; only Cascade-written files appear later
+    assert ws.changed_paths() == []
