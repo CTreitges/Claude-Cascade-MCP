@@ -83,7 +83,7 @@ async def log_error(
             body,
             category="finding",
             importance="high",
-            tags=f"claude-cascade,error,{scope}",
+            tags=f"cascade-bot-mcp,error,{scope}",
         )
     except Exception as e:
         log.warning("error_log rlm insight failed: %s", e)

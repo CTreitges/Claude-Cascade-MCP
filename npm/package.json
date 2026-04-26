@@ -1,23 +1,40 @@
 {
   "name": "cascade-bot-mcp",
   "version": "0.2.0",
-  "description": "npx wrapper that launches the Cascade-Bot MCP server (Python).",
+  "description": "npx wrapper that launches the Cascade-Bot MCP server (Python). Multi-agent Plan→Implement→Review loop for Claude Code.",
   "license": "MIT",
+  "author": "Cascade-Bot Contributors",
   "bin": {
     "cascade-bot-mcp": "./bin/cascade-bot-mcp.js"
   },
+  "files": [
+    "bin/",
+    "README.md",
+    "LICENSE"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/CTreitges/cascade-bot-mcp.git"
   },
+  "homepage": "https://github.com/CTreitges/cascade-bot-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/CTreitges/cascade-bot-mcp/issues"
+  },
   "keywords": [
     "mcp",
     "claude",
+    "claude-code",
     "cascade",
     "agent",
-    "code-generation"
+    "code-generation",
+    "anthropic",
+    "ollama"
   ],
   "engines": {
     "node": ">=18"
+  },
+  "scripts": {
+    "start": "node bin/cascade-bot-mcp.js",
+    "test:resolve": "node bin/cascade-bot-mcp.js --resolve-only || true"
   }
 }

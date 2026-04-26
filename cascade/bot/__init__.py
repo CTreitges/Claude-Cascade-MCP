@@ -76,9 +76,19 @@ def main() -> None:
     setup_logging()
     s = settings()
     if not s.telegram_bot_token:
-        raise SystemExit("TELEGRAM_BOT_TOKEN not set in .env")
+        raise SystemExit(
+            "TELEGRAM_BOT_TOKEN not set.\n"
+            "→ Run `cascade-setup` first (interactive wizard), or paste\n"
+            "  the token into .env manually. The wizard writes to\n"
+            "  secrets.env so your .env stays untouched.",
+        )
     if not s.telegram_owner_id:
-        raise SystemExit("TELEGRAM_OWNER_ID not set in .env")
+        log.warning(
+            "TELEGRAM_OWNER_ID is unset — running in OPEN-CLAIM mode.\n"
+            "The FIRST user who messages this bot becomes the owner and\n"
+            "gets locked in. Send /start from your own Telegram account\n"
+            "before anyone else does.",
+        )
 
     app = (
         Application.builder()

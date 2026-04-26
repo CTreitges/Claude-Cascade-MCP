@@ -28,7 +28,7 @@ from .config import settings
 
 log = logging.getLogger("cascade.memory")
 
-PROJECT = "claude-cascade"
+PROJECT = "cascade-bot-mcp"
 
 
 def _memory_path() -> Path:
@@ -69,7 +69,7 @@ async def remember_finding(
     *,
     category: Literal["finding", "decision", "preference", "fact"] = "finding",
     importance: Literal["low", "medium", "high", "critical"] = "medium",
-    tags: str = "claude-cascade",
+    tags: str = "cascade-bot-mcp",
     extra: dict[str, Any] | None = None,
 ) -> bool:
     """Record an insight. Best-effort: never raises, returns True iff at least

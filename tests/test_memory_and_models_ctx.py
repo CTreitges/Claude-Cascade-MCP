@@ -80,7 +80,7 @@ async def test_remember_writes_jsonl(isolated_memory: Path):
         "test entry one",
         category="finding",
         importance="high",
-        tags="claude-cascade,test",
+        tags="cascade-bot-mcp,test",
     )
     assert ok is True
     path = isolated_memory / "store" / "memory.jsonl"
@@ -91,7 +91,7 @@ async def test_remember_writes_jsonl(isolated_memory: Path):
     assert entry["content"] == "test entry one"
     assert entry["category"] == "finding"
     assert entry["importance"] == "high"
-    assert entry["project"] == "claude-cascade"
+    assert entry["project"] == "cascade-bot-mcp"
 
 
 async def test_remember_decision_routes_correctly(isolated_memory: Path):

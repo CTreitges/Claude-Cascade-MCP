@@ -123,7 +123,7 @@ async def on_skill_callback(update: Update, ctx) -> None:
             await remember_decision(
                 f"New skill saved: '{name}' — {sug.get('description') or ''}. "
                 f"Template: {sug.get('task_template', '')[:200]}",
-                importance="high", tags="claude-cascade,skill,user-accepted",
+                importance="high", tags="cascade-bot-mcp,skill,user-accepted",
             )
             await q.edit_message_text(
                 f"✅ Skill `{name}` gespeichert. Aufruf via `/run {name} <args>`."

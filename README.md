@@ -1,14 +1,55 @@
-# cascade-bot-mcp
+# Cascade-Bot-MCP
 
-Multi-Agent **Plan → Implement → Review** loop with hard-gated quality checks,
-persistent chat memory, self-healing retries, and three interfaces:
+> A multi-agent **Plan → Implement → Review** loop you can talk to from
+> Telegram, Claude Code, or the CLI.
 
-- **MCP-Server** for Claude Code (`mcp__cascade__*`)
-- **Telegram-Bot** with voice / vision / shell / git, persistent chat
-  memory (FTS5 + BM25 RLM-Recall), inline-keyboard resume confirmation,
-  auto-stage of credentials, heartbeats during long runs, guided
-  `/setup` wizard for API keys
-- **CLI** (`cascade "<task>"`)
+Cascade-Bot watches a task all the way from "make me a thing" through
+planning, implementation, quality-checks, and review — and keeps going
+until every check passes (or the LLM-usage budget runs out). It's
+designed to run as a **Claude Code MCP server**, with an optional
+Telegram front-end for sending tasks from your phone.
+
+```
+You / Claude Code / Telegram
+            │
+            ▼
+        Triage  (chat / direct-action / cascade)
+            │
+            ▼
+   Plan → Implement → Review        ←── loops with stagnation guards
+            │                            and 7-day rate-limit waits
+            ▼
+   ✅ done       ❌ failed (only on stagnation+budget exhausted)
+```
+
+---
+
+## Why MCP, not a standalone product
+
+The cascade orchestrator (`cascade.core.run_cascade`) is **the same code**
+whether you reach it from Claude Code, Telegram, or the CLI. It's
+shipped as an MCP server so you can call it from inside Claude Code with
+`mcp__cascade__run_cascade_tool(task=...)` and have:
+
+1. **Plan + Review on your local Claude CLI** — Opus + Sonnet calls go
+   through the same `claude` binary you already have. As long as you're
+   logged into Claude (e.g. via the Max plan), there are **no API costs
+   for those steps**. The cascade isn't selling you LLM access — it just
+   orchestrates calls you already have.
+
+2. **Implementer on a separate cloud LLM** — code generation is the
+   high-volume step, so it's offloaded to a cheap/fast model
+   (Ollama Cloud's qwen3-coder:480b by default; DeepSeek / GLM / MiniMax
+   / Kimi via OpenAI-compatible endpoints; or even Claude itself if you
+   prefer).
+
+3. **Long-running tasks survive your IDE** — Claude Code sessions are
+   ephemeral; cascade tasks live in SQLite under `~/cascade-bot-mcp/store/`
+   and a Telegram bot (optional) gives you status updates from anywhere.
+
+You bring your own Claude Code subscription and your own LLM API keys.
+Cascade is the loop logic + memory + UX glue that turns those into a
+reliable agentic workflow.
 
 ---
 
@@ -17,13 +58,12 @@ persistent chat memory, self-healing retries, and three interfaces:
 ```
 Telegram / Claude Code (MCP) / CLI
               │
-              ▼  Triage (3-mode: chat / direct_action / cascade)
+              ▼  Triage (3-mode: chat / direct-action / cascade)
    ┌──────────────────────────────────────┐
    │  Cascade Core (asyncio)              │
    │  Plan → Implement → Review           │
    │  + Quality-Checks (hard gate)        │
-   │  + Replan-on-Failure                 │
-   │  + Stagnation-Detection (force replan│
+   │  + Stagnation-Detection (force-replan│
    │    on identical reviewer feedback)   │
    │  + HealingMonitor (stuck/perm-denied │
    │    diagnostic events)                │
@@ -43,63 +83,98 @@ DE/EN     +shortcut     strict      (Claude)
        + iterations + skills) + RLM (BM25)
 ```
 
+| Worker          | Default Model       | Configurable via |
+|-----------------|---------------------|------------------|
+| Planner         | `claude-opus-4-7`   | `/models`, `.env` |
+| Implementer     | `qwen3-coder:480b` (Ollama Cloud) | `/models` (4 cloud picks) |
+| Reviewer        | `claude-sonnet-4-6` | `/models`, `.env` |
+| Triage          | `claude-sonnet-4-6` | `.env` |
+| Skill suggester | uses planner model  | (auto) |
+
 The bot's chat-memory layer keeps:
 
-- **Hot tier** — last 30 messages verbatim with inline file content (≤30KB
-  per upload) and a JSON classification (e.g. `google_service_account`).
-- **Warm tier** — older messages → Sonnet-summarised in a background task
-  every 6h.
-- **Long tier** — RLM (BM25 ranking + DE/EN stop-words + importance boost).
-
-`build_context()` ships the structured block (USER FACTS · RECENT UPLOADS ·
-CONVERSATION · EARLIER · SEARCH HITS) to the triage prompt, which also gets
-strict path-prevalidation against `simple_actions._ALLOWED_ROOTS` for any
-proposed direct-action target.
-
-| Worker        | Default Model        | Configurable via |
-|---------------|----------------------|------------------|
-| Planner       | `claude-opus-4-7`    | `/models`, `.env` |
-| Implementer   | `qwen3-coder:480b` (Ollama Cloud) | `/models` (4 cloud picks) |
-| Reviewer      | `claude-sonnet-4-6`  | `/models`, `.env` |
-| Triage        | `claude-sonnet-4-6`  | `.env` |
-| Skill suggester | uses planner model | (auto) |
+- **Hot tier** — last 30 messages verbatim with inline file content
+  (≤ 30 KB per upload) and a JSON classification (e.g.
+  `google_service_account`).
+- **Warm tier** — older messages → Sonnet-summarised in a background
+  task every 6 h.
+- **Long tier** — RLM (BM25 ranking + DE/EN stop-words + importance
+  boost).
 
 ---
 
-## Setup
-
-### 1. Clone + install dependencies
+## Quick start — TL;DR
 
 ```bash
-git clone https://github.com/CTreitges/cascade-bot-mcp.git ~/claude-cascade
-cd ~/claude-cascade
+# 1. clone + venv
+git clone https://github.com/CTreitges/cascade-bot-mcp.git ~/cascade-bot-mcp
+cd ~/cascade-bot-mcp
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt        # runtime
-# or for development:
-# .venv/bin/pip install -r requirements-dev.txt  # + pytest, ruff
+.venv/bin/pip install -r requirements.txt
+
+# 2. interactive setup wizard (Telegram token, provider keys, …)
+.venv/bin/cascade-setup
+
+# 3. wire it into Claude Code
+claude mcp add cascade --scope user -- \
+  ~/cascade-bot-mcp/.venv/bin/python ~/cascade-bot-mcp/mcp_server.py
+
+# 4. (optional) start the Telegram bot
+.venv/bin/python bot.py
+#   → on Telegram, open your bot and send /start
+#     the FIRST message claims you as owner; settings auto-locked
 ```
 
-### 2. Bootstrap minimum config
+That's it. `mcp__cascade__*` tools are now available in any Claude Code
+session, and the Telegram bot is a fully-featured chat partner with
+guided `/setup`, voice transcription, file uploads, etc.
 
-The bot needs **two** values up front; everything else is filled in by the
-`/setup` wizard inside Telegram:
+---
+
+## Setup — detailed
+
+### 1. Clone and install dependencies
 
 ```bash
-cp .env.example .env
-# Edit .env and set:
-#   TELEGRAM_BOT_TOKEN=...   (from @BotFather)
-#   TELEGRAM_OWNER_ID=...    (your numeric user id, from @userinfobot)
+git clone https://github.com/CTreitges/cascade-bot-mcp.git ~/cascade-bot-mcp
+cd ~/cascade-bot-mcp
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+# For development (pytest, ruff):
+# .venv/bin/pip install -r requirements-dev.txt
 ```
 
-Don't bother filling in API keys yet — start the bot, send `/setup`, and
-it walks you through Ollama / OpenAI / Brave / GitHub one prompt at a
-time. Answers go into `secrets.env` (gitignored, chmod 0600). Your
-`.env` is never overwritten.
+Python 3.11+ required.
 
-### 3. (Optional) Install RLM-Claude for long-term memory
+### 2. Run the setup wizard
 
-The bot works without it (falls back to a local JSONL), but RLM-Claude
-gives BM25-ranked recall across runs.
+```bash
+.venv/bin/cascade-setup
+```
+
+Walks you through:
+
+- **Telegram bot token** (from `@BotFather` → `/newbot`)
+- **Implementer provider** (Ollama / OpenAI-compatible / local Claude CLI)
+- **Provider-specific API key**
+- **Optional**: OpenAI key (Whisper voice), Brave Search key (live web),
+  GitHub PAT (private repo pushes)
+
+All answers are written to `~/cascade-bot-mcp/secrets.env` (chmod 0600,
+gitignored). Your `.env` is **never** touched by the wizard. You can
+keep using your own `.env` if you prefer manual config — `secrets.env`
+just overrides on top.
+
+The wizard does **not** ask for your Telegram user ID. Once the bot is
+running, the **first user who messages it becomes the owner** —
+`cascade.bot.helpers.owner_only` writes `TELEGRAM_OWNER_ID` to
+`secrets.env` and locks future updates to that account. So just send
+`/start` from your own account before anyone else does.
+
+### 3. (Optional) Install RLM-Claude for cross-session memory
+
+The bot works without it (recall falls back to a local JSONL), but
+RLM-Claude gives BM25-ranked recall across runs.
 
 ```bash
 # Linux / WSL native:
@@ -109,27 +184,20 @@ bash scripts/install-rlm-claude.sh
 pwsh -File scripts/install-rlm-claude.ps1
 ```
 
-### 4. Run tests + smoke-test the CLI
-
-```bash
-.venv/bin/pytest -q          # all tests should be green
-.venv/bin/cascade "Erstelle hello.py das 'hi' druckt"
-```
-
-### 5. Register MCP server with Claude Code
+### 4. Register the MCP server with Claude Code
 
 Three options — pick whichever you prefer:
 
 **A) Direct (no Node needed):**
 ```bash
 claude mcp add cascade --scope user -- \
-  ~/claude-cascade/.venv/bin/python ~/claude-cascade/mcp_server.py
+  ~/cascade-bot-mcp/.venv/bin/python ~/cascade-bot-mcp/mcp_server.py
 ```
 
 **B) Via the launcher script (auto-resolves venv / pipx):**
 ```bash
 claude mcp add cascade --scope user -- \
-  bash ~/claude-cascade/scripts/mcp-launcher.sh
+  bash ~/cascade-bot-mcp/scripts/mcp-launcher.sh
 ```
 
 **C) Via npx wrapper (zero Python-path knowledge needed):**
@@ -137,26 +205,18 @@ claude mcp add cascade --scope user -- \
 claude mcp add cascade -- npx -y cascade-bot-mcp
 ```
 
-In a new Claude Code session:
+> Option C only works once the npm package is published. See
+> [§ Publishing the npm wrapper](#publishing-the-npm-wrapper) below.
+> Until then, A and B are equivalent in functionality.
 
+### 5. Run tests + smoke-test the CLI
+
+```bash
+.venv/bin/pytest -q
+.venv/bin/cascade "Erstelle hello.py das 'hi' druckt"
 ```
-mcp__cascade__run_cascade_tool(task="…", repo="/path", sync=true)
-mcp__cascade__cascade_status(task_id="…")
-mcp__cascade__cascade_logs(task_id="…", tail=50)
-mcp__cascade__cascade_cancel(task_id="…")
-mcp__cascade__cascade_history(limit=10)
-```
 
-There's also a `/cascade <task>` slash-command at `~/.claude/commands/cascade.md`.
-
-### Windows users
-
-Run everything inside WSL2 (Ubuntu). The Python parts are tested on
-Linux only — RLM-Claude in particular is Linux-native. The PowerShell
-helper `scripts/install-rlm-claude.ps1` will check your WSL setup and
-forward the install into the right distro for you.
-
-### 6. Telegram bot as systemd-user-service
+### 6. Telegram bot as a systemd-user-service
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -167,198 +227,182 @@ sudo loginctl enable-linger $USER       # survive logout / reboot
 journalctl --user -u cascade-bot -f
 ```
 
+The default service file points at `%h/cascade-bot-mcp/`. If you
+installed under `~/claude-cascade/` (the legacy default), edit the
+`WorkingDirectory` and `EnvironmentFile` lines accordingly — `cascade_home`
+will fall back to `~/claude-cascade` if it exists, so your existing
+install keeps working.
+
+---
+
+## Windows users
+
+Run everything inside **WSL2** (Ubuntu). The Python parts are tested on
+Linux only — RLM-Claude in particular is Linux-native. The PowerShell
+helper `scripts/install-rlm-claude.ps1` checks your WSL setup and
+forwards the install into the right distro for you.
+
+> Use **pwsh** (PowerShell 7+) rather than the legacy Windows
+> PowerShell 5 — better UTF-8 handling and the script is tested against
+> 7.x.
+
+---
+
+## Publishing the npm wrapper
+
+The `npm/` directory contains a tiny Node-based launcher that lets new
+users do `claude mcp add cascade -- npx -y cascade-bot-mcp` without
+needing to know any Python paths. The launcher is purely a delegator —
+the real MCP server is still Python.
+
+To make `npx -y cascade-bot-mcp` work for everyone, publish the wrapper
+to npmjs.com once:
+
+1. **Create an npm account** (one-time, free):
+   <https://www.npmjs.com/signup>
+
+2. **Login from the shell:**
+   ```bash
+   npm login
+   ```
+
+3. **Verify the package locally:**
+   ```bash
+   cd npm
+   node bin/cascade-bot-mcp.js   # should resolve & launch the python server
+   npm pack --dry-run             # what would be uploaded
+   ```
+
+4. **Publish (public scope):**
+   ```bash
+   cd npm
+   npm publish --access public
+   ```
+
+5. **(Optional) Future updates** — bump `version` in `npm/package.json`
+   first, then re-publish. npm refuses to overwrite a version, so
+   release-tag-style bumps are required.
+
+After step 4, anyone can install the MCP server with one command:
+```bash
+claude mcp add cascade -- npx -y cascade-bot-mcp
+```
+
+The npx wrapper still expects the **Python** server to be reachable
+(`$CASCADE_HOME/.venv/...` or `cascade-mcp` on PATH). It just removes
+the need for users to type the exact path.
+
+---
+
+## What's included
+
+### MCP tools (exposed to Claude Code)
+
+| Tool | Purpose |
+|------|---------|
+| `mcp__cascade__run_cascade_tool` | Run a Plan→Implement→Review cascade. `sync=True` blocks; `sync=False` returns a `task_id`. |
+| `mcp__cascade__cascade_status` | Status / iteration / summary of a task. |
+| `mcp__cascade__cascade_logs`   | Last N log lines for a task. |
+| `mcp__cascade__cascade_cancel` | Cancel a running task. |
+| `mcp__cascade__cascade_history`| Recent N tasks across interfaces. |
+
+There's also a `/cascade <task>` slash-command at
+`~/.claude/commands/cascade.md` that wraps the MCP tool.
+
+### Telegram commands (highlights — `/help` for everything)
+
+| Command | Purpose |
+|---------|---------|
+| `/start` | Welcome + setup-status check |
+| `/setup` | Guided wizard for API keys |
+| `/status [id]` / `/logs [id]` / `/diff [id]` | Task introspection |
+| `/queue` / `/wait` / `/cancel` / `/abort` | Task control |
+| `/again [id]` / `/resume <id>` | Retry / continue failed tasks |
+| `/skills` / `/run <name>` / `/skillupgrade` | Reusable skill templates |
+| `/repo <path>` / `/lang <de\|en>` / `/models` / `/effort` | Per-chat config |
+| `/replan [n]` / `/iterations [n]` / `/failsbeforereplan [n]` / `/subtasks [n]` | Budget knobs |
+| `/toggles` | Triage / Auto-Skill / Context7 / Web-Search / Auto-Decompose / Multi-Plan |
+| `/forget` / `/chat` | Memory control |
+| `/exec <cmd>` / `/git <repo> <subcmd>` | Shell + git (whitelisted) |
+
+---
+
+## Privacy / what stays local
+
+The repo is **fully clean of personal data** — no real tokens, owner
+IDs, or project IDs are committed. Specifically:
+
+- `.env`, `secrets.env`, anything under `store/` (DB / logs / RLM
+  fallback), and `workspaces/` are gitignored.
+- `.env.example` ships empty placeholders only.
+- The setup wizard writes API keys to `secrets.env` (chmod 0600) and
+  never touches `.env`.
+- Author metadata in `pyproject.toml` / `npm/package.json` / `LICENSE`
+  is a generic "Cascade-Bot Contributors".
+
+So you can `git push origin cascade-bot-mcp` straight from your local
+clone without leaking anything.
+
 ---
 
 ## How the loop works
 
-```
-1. Planner (Opus) reads the task + locally-discovered repos.
-   Returns:  steps, files_to_touch, acceptance_criteria,
-             repo: {kind: local|clone|fresh, path?, url?},
-             quality_checks: [{name, command, must_succeed, ...}, ...]
-
-2. Resolve workspace:
-   --repo <path>           caller wins
-   plan.repo.kind=local    Workspace.attach(path)
-   plan.repo.kind=clone    git clone --depth 1 url → workspaces/<tid>-clone/
-   plan.repo.kind=fresh    Workspace.create(tmp)
-
-3. Loop (max 5 iterations by default):
-     Implementer (Cloud LLM) gets plan + workspace files + relevant FILE
-       CONTENTS (sandboxed read of plan.files_to_touch + basename matches).
-       Returns FileOps[].
-     workspace.apply_ops(ops)
-     run quality_checks  → CheckResult[]
-     Reviewer (Sonnet) sees plan + diff + check results.
-       Hard gate: any failing check forces pass=false.
-     If pass → done.
-     If 2 consecutive fails AND replan budget left
-       → Planner gets failure history, may rewrite plan + checks.
-
-4. After done: skill_suggester (Opus) checks if the recent task pattern
-   should become a reusable skill. User accepts via inline button.
-```
-
----
-
-## Telegram bot — commands
-
-| Command | Effect |
-|---|---|
-| Text / voice / photo+caption | start a cascade run |
-| `/status [id]` | latest or specified task status |
-| `/logs [id]` | last 50 log lines |
-| `/cancel [id]` | cancel running task |
-| `/history` | last 10 tasks |
-| `/resume <id>` | resume an interrupted task |
-| `/repo <path>` | set default repo for this chat (`clear` to remove) |
-| `/exec <cmd>` | run shell command (60s timeout, 4kB cap) |
-| `/git <repo> <subcmd>` | whitelist: status / log / diff / branch / checkout / pull / push / commit / show |
-| `/lang de\|en` | switch bot language (DE/EN) |
-| `/models` | inline keyboard: pick worker → pick model |
-| `/effort` | inline keyboard: pick worker → pick effort (low/medium/high/xhigh/max) |
-| `/replan [n]` | replan budget (0..10), or no-arg for inline keyboard |
-| `/skills` | list saved skills (auto-suggested after runs) |
-| `/skills delete <name>` | remove a saved skill |
-| `/run <skill_name> [args]` | run a saved skill — `{file}=foo.py` or positional `{0}` |
-| `/help` | command overview |
-
-**Smart triage** runs before every text message: a fast Sonnet call decides
-whether the message is a *task* (→ start cascade) or *conversation* (→
-short Sonnet reply with context of the last 3 tasks). Falls back to a regex
-heuristic if Claude is unreachable.
-
-**Auto-skill-suggestion** fires after every successful run: Opus checks
-whether the recent task pattern is worth saving as a parametrised skill.
-Suggestion is shown with `💾 Save / ❌ Discard` inline buttons. Cooldown
-prevents spam. Set `CASCADE_AUTO_SKILL_SUGGEST=false` to disable.
-
-**Auto-resume** at bot start: any leftover `running` task in SQLite is
-marked `interrupted` and the owner is notified. Use `/resume <id>` to
-continue.
+1. **Triage** — every incoming message is classified into chat / direct-
+   action / full-cascade. Direct actions go through a one-pass quick
+   reviewer; full cascades enter the main loop.
+2. **Plan** — Opus turns the task into steps + acceptance criteria +
+   quality-checks. If the task is small, the planner emits `direct_ops`
+   instead and skips the loop entirely.
+3. **Implement** — Ollama / OpenAI-compat / Claude generates a JSON
+   list of file ops. `apply_ops` validates Python via `ast.parse`,
+   JSON/TOML/YAML via parsers, and rejects function bodies that are
+   bare `pass` / `...` / `raise NotImplementedError`.
+4. **Quality checks** — every command in `plan.quality_checks` runs in
+   the workspace. Plus auto-appended `python3 -m py_compile` and (when
+   ruff is installed) `ruff check`.
+5. **Review** — Sonnet judges the diff against the plan AND the
+   original task. Pass requires every quality check ✅, every
+   acceptance criterion mentioned, and no TODO/FIXME stubs.
+6. **Replan / stagnation** — identical reviewer feedback two iterations
+   in a row triggers an immediate replan. After `cascade_replan_max`
+   replans (default 2) with continued stagnation, the run ends with
+   `status='failed'` instead of looping forever.
+7. **Wait + retry** — rate-limit / weekly-session-cap errors → the run
+   waits up to 7 days for the next window. The `/wait` command shows
+   ETAs.
+8. **Lessons learned** — successful runs spawn a brief Sonnet self-
+   critique that's persisted as an RLM finding so similar future tasks
+   start with that hindsight as context.
 
 ---
 
-## Implementer model catalog (curated /models picks)
+## Configuration
 
-Verified against `https://ollama.com/v1/models`:
+Defaults live in `cascade/config.py` (`Settings` class). Overrides come
+from, in order of precedence:
 
-- `glm-5.1`
-- `kimi-k2.6`
-- `minimax-m2.7`
-- `deepseek-v4-flash`
+1. CLI / function arguments to `run_cascade(...)`
+2. Per-chat `sessions` table (Telegram-only)
+3. `<CASCADE_HOME>/secrets.env`  ← wizard writes here
+4. `secrets.env` in repo root (alternative wizard target)
+5. `.env` in repo root  ← user-edited, never touched by wizard
+6. Built-in defaults
 
-`qwen3-coder:480b` stays as the runtime default (`CASCADE_IMPLEMENTER_MODEL`)
-but isn't shown in the menu. OpenAI-compatible providers (GLM/DeepSeek/MiniMax/
-Kimi via direct API) are also wired — see `cascade/llm_client.py` and
-`Settings.openai_compat_credentials`.
+Notable knobs:
 
----
-
-## Configuration (`.env`)
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `TELEGRAM_BOT_TOKEN` | — | from @BotFather |
-| `TELEGRAM_OWNER_ID` | — | numeric Telegram user id (only this user is served) |
-| `OLLAMA_CLOUD_API_KEY` | — | from ollama.com |
-| `OPENAI_API_KEY` | — | optional, only for Whisper voice |
-| `CASCADE_BOT_LANG` | `de` | `de` or `en` |
-| `CASCADE_TIMEZONE` | `Europe/Berlin` | IANA TZ, used for `/logs` timestamps |
-| `CASCADE_IMPLEMENTER_PROVIDER` | `ollama` | `ollama` or `openai_compatible` |
-| `CASCADE_IMPLEMENTER_MODEL` | `qwen3-coder:480b` | tag |
-| `CASCADE_IMPLEMENTER_TOOLS` | `fileops` | `fileops` or `mcp` |
-| `CASCADE_PLANNER_MODEL` | `claude-opus-4-7` | |
-| `CASCADE_REVIEWER_MODEL` | `claude-sonnet-4-6` | |
-| `CASCADE_TRIAGE_MODEL` | `claude-sonnet-4-6` | |
-| `CASCADE_PLANNER_EFFORT` | `` | empty = no `--effort` flag |
-| `CASCADE_REVIEWER_EFFORT` | `` | |
-| `CASCADE_TRIAGE_EFFORT` | `` | |
-| `CASCADE_TRIAGE_ENABLED` | `true` | set false to dispatch every text as task |
-| `CASCADE_MAX_ITERATIONS` | `5` | per run |
-| `CASCADE_REPLAN_AFTER_FAILURES` | `2` | trigger replan after N consecutive fails |
-| `CASCADE_REPLAN_MAX` | `2` | max planner re-invocations per run |
-| `CASCADE_AUTO_SKILL_SUGGEST` | `true` | offer skills after successful runs |
-| `CASCADE_SKILL_SUGGEST_COOLDOWN_S` | `300` | suggestion rate-limit |
-| `CASCADE_WORKSPACE_RETENTION_DAYS` | `7` | tmp workspace cleanup window |
-
-Per-chat overrides (set via Telegram, persisted in SQLite):
-`/repo`, `/models`, `/effort`, `/replan`, `/lang`.
+- `CASCADE_MAX_ITERATIONS` — default 999 (effectively unlimited; only
+  LLM-usage budget stops a run)
+- `CASCADE_REPLAN_MAX` — default 2; configurable per-chat via `/replan`
+- `CASCADE_REPLAN_AFTER_FAILURES` — default 2; per-chat via
+  `/failsbeforereplan`
+- `CASCADE_DEBUG` — verbose rotating debug log
+- `CASCADE_SUMMARIZE_ENABLED` — background chat summariser (default on)
+- `CASCADE_AUTO_RESUME_INTERRUPTED` — resume orphan running tasks on
+  bot startup (default off; the inline keyboard handles the per-task
+  ask either way)
 
 ---
 
-## Tests
+## License
 
-```bash
-.venv/bin/pytest -q     # 144 passing
-.venv/bin/ruff check .  # clean
-```
-
-Test surface:
-
-- `test_smoke` — package imports, default settings
-- `test_workspace`, `test_workspace_read`, `test_workspace_attached_and_checks`
-  — sandboxed FileOps, file-content reads, attached-mode no-pollution,
-  quality-check execution
-- `test_store`, `test_store_models` — SQLite schema, sessions, model overrides
-- `test_claude_cli` — JSON envelope parsing
-- `test_llm_client` — provider routing (Ollama vs OpenAI-compatible)
-- `test_agents` — Plan / ReviewResult / ImplementerOutput pydantic schemas
-- `test_core` — orchestrator end-to-end with mocked agents (cancel, resume,
-  fail-after-max-iter, progress callbacks)
-- `test_core_quality_loop` — quality-check hard gate + retry-to-pass
-- `test_replan` — replan trigger after N failures, budget cap, no-replan-on-pass
-- `test_repo_resolver` — local-repo discovery + clone fallback (uses real
-  local `git clone` via file URL)
-- `test_models_triage` — implementer catalog, triage cooldown / threshold /
-  parse-error gating, claude-vs-heuristic fallback
-- `test_effort_replan` — effort flag plumbing, store persistence
-- `test_skills` — skill CRUD, suggester gating, template substitution
-
----
-
-## Security notes
-
-- Owner-check is the **first** middleware — unauthorized updates are silently
-  dropped.
-- `apply_ops` validates every path with `Path.resolve().is_relative_to(root)`
-  to block `../` escapes and symlink hijacks.
-- `/exec` caps timeout (60s) and output (4kB), uses `shlex.split`-style
-  arg passing.
-- `/git` enforces a subcommand whitelist.
-- `.env` is in `.gitignore`; secrets never committed.
-- Quality-check commands run with `cwd=workspace.root` and a 60s default
-  timeout.
-- Workspace attach mode never commits to the user's repo (`commit_iteration`
-  is a no-op). Diffs use `base_ref` = HEAD-at-attach-time.
-
----
-
-## Repo layout
-
-```
-~/claude-cascade/
-├── pyproject.toml
-├── README.md                    # this file
-├── .env / .env.example          # config
-├── cascade/
-│   ├── core.py                  # Plan→Implement→Review orchestrator
-│   ├── workspace.py             # Sandboxed FileOps + git-diff + run_check
-│   ├── store.py                 # aiosqlite (tasks / iterations / logs / sessions / skills)
-│   ├── claude_cli.py            # `claude -p` subprocess wrapper
-│   ├── llm_client.py            # Ollama Cloud + OpenAI-compatible router
-│   ├── memory.py                # RLM-Claude bridge (best-effort stub)
-│   ├── repo_resolver.py         # discover local repos, resolve plan.repo
-│   ├── skill_suggester.py       # post-run "is this worth a skill?"
-│   ├── triage.py                # task-vs-chat classifier
-│   ├── i18n.py                  # bot i18n (DE/EN)
-│   ├── models.py                # implementer/planner-reviewer model catalog
-│   ├── config.py                # pydantic-settings
-│   └── agents/{planner,implementer,reviewer}.py
-├── mcp_server.py                # FastMCP stdio server
-├── bot.py                       # python-telegram-bot v21+
-├── systemd/cascade-bot.service  # user-service template
-├── store/                       # SQLite db lives here
-├── workspaces/                  # tmp dirs per task (auto-cleanup)
-└── tests/
-```
+MIT — see [LICENSE](LICENSE).

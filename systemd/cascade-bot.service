@@ -1,5 +1,5 @@
 [Unit]
-Description=Claude-Cascade Telegram Bot
+Description=Cascade-Bot Telegram Service
 After=network-online.target
 Wants=network-online.target
 

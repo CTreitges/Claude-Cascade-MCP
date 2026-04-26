@@ -122,5 +122,5 @@ async def persist_lessons(text: str, *, task_id: str, task_text: str) -> None:
         f"[lessons-learned task={task_id}]\n{text}",
         category="finding",
         importance="medium",
-        tags=f"claude-cascade,lessons-learned,{tag_keywords}",
+        tags=f"cascade-bot-mcp,lessons-learned,{tag_keywords}",
     )

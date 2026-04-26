@@ -728,7 +728,7 @@ async def run_cascade(
                                 f"Sub-task '{subtask.name}' replanned at iter "
                                 f"{cumulative_iter}: '{task[:80]}'",
                                 importance="medium",
-                                tags=f"claude-cascade,subtask-replan,{subtask.name}",
+                                tags=f"cascade-bot-mcp,subtask-replan,{subtask.name}",
                                 extra={"task_id": task_id},
                             )
                         except Exception as e:
@@ -978,7 +978,7 @@ async def run_cascade(
                     f"plan_summary={(plan.summary or '')[:200]}",
                     category="finding",
                     importance="medium" if review.severity == "low" else "high",
-                    tags=f"claude-cascade,task,{source}",
+                    tags=f"cascade-bot-mcp,task,{source}",
                     extra={"task_id": task_id, "review_severity": review.severity},
                 )
 
@@ -1175,7 +1175,7 @@ async def run_cascade(
                         f"Cascade replanned after iter {iter_n}: '{task[:80]}'. "
                         f"new plan: {plan.summary[:150]}",
                         importance="medium",
-                        tags="claude-cascade,replan",
+                        tags="cascade-bot-mcp,replan",
                         extra={"task_id": task_id},
                     )
                 except Exception as e:
@@ -1190,7 +1190,7 @@ async def run_cascade(
             f"Task FAILED after max iters: '{task[:120]}'. "
             f"last review: {(last_review.feedback if last_review else '—')[:200]}",
             category="finding", importance="high",
-            tags=f"claude-cascade,task,failure,{source}",
+            tags=f"cascade-bot-mcp,task,failure,{source}",
             extra={"task_id": task_id},
         )
         await _emit(progress, store, task_id, "failed", {"summary": summary})

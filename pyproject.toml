@@ -8,7 +8,7 @@ version = "0.2.0"
 description = "Multi-agent Plan→Implement→Review loop with MCP + Telegram interfaces."
 readme = "README.md"
 requires-python = ">=3.11"
-authors = [{ name = "Christof Treitges" }]
+authors = [{ name = "Cascade-Bot Contributors" }]
 dependencies = [
   "anthropic>=0.40",
   "ollama>=0.4",
@@ -33,6 +33,7 @@ dev = [
 cascade = "cascade.core:cli_main"
 cascade-bot = "bot:main"
 cascade-mcp = "mcp_server:main"
+cascade-setup = "cascade.setup_cli:main"
 
 [tool.setuptools]
 packages = [

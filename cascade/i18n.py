@@ -112,7 +112,7 @@ _STRINGS: dict[str, dict[Lang, str]] = {
     # /help
     "help": {
         "de": (
-            "*🌊 Claude-Cascade Bot*\n"
+            "*🌊 Cascade-Bot*\n"
             "_Multi-Agent Coding-Bot: Plan → Implement → Review_\n\n"
 
             "*▸ Eingabe*\n"
@@ -204,7 +204,7 @@ _STRINGS: dict[str, dict[Lang, str]] = {
             "_Tip: schreib drauflos — der Bot triagiert selbst._"
         ),
         "en": (
-            "*🌊 Claude-Cascade Bot*\n"
+            "*🌊 Cascade-Bot*\n"
             "_Multi-agent coding bot: Plan → Implement → Review_\n\n"
 
             "*▸ Input*\n"

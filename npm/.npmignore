@@ -1,0 +1,12 @@
+# Anything that isn't shipped to npm.
+# `files` in package.json is the allowlist; this file is the explicit denylist.
+node_modules/
+.git/
+.github/
+*.log
+.DS_Store
+.vscode/
+.idea/
+test/
+tests/
+__pycache__/

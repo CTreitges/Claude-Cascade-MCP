@@ -52,9 +52,60 @@ def is_owner(update: Update) -> bool:
     return bool(user and s.telegram_owner_id and user.id == s.telegram_owner_id)
 
 
+# Module-level guard so the auto-claim happens exactly once even under
+# concurrent updates. Set when the file write succeeds.
+_owner_claimed_in_process = False
+
+
 async def owner_only(update: Update, _ctx) -> bool:
+    """Gate every handler against the configured owner.
+
+    First-run claim flow:  if `TELEGRAM_OWNER_ID` is unset (= 0) AND no
+    one has claimed yet in this process, accept the very first sender,
+    persist their id into `secrets.env`, and update the Settings cache
+    in-process so subsequent updates are gated normally. Logs a clear
+    `OWNER CLAIMED` warning so operators see what happened — important
+    because the *first message wins* model means whoever messages a
+    freshly-deployed bot first becomes its owner.
+    """
+    global _owner_claimed_in_process
+    s = settings()
+    user = update.effective_user
+    if user is None:
+        return False
+
+    if s.telegram_owner_id == 0 and not _owner_claimed_in_process:
+        # Auto-claim
+        try:
+            from cascade.secrets_store import set_secret
+            set_secret("TELEGRAM_OWNER_ID", str(user.id))
+            # Also patch the in-process Settings so further calls don't
+            # re-trigger the claim path (Settings is cached).
+            s.telegram_owner_id = user.id  # type: ignore[misc]
+            _owner_claimed_in_process = True
+            log.warning(
+                "OWNER CLAIMED — telegram_owner_id auto-set to %s "
+                "(@%s, name=%s) on first incoming message",
+                user.id, user.username or "?", user.first_name or "?",
+            )
+            try:
+                await update.effective_message.reply_text(
+                    f"✅ Owner gesetzt: `{user.id}` (@{user.username or '?'})\n"
+                    f"Ich bin jetzt fest auf dieses Konto gelockt. "
+                    f"`/setup` fügt API-Keys hinzu — `/help` zeigt alles.",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+            except Exception:
+                pass
+            return True
+        except Exception as e:
+            log.error("owner auto-claim failed: %s", e)
+
     if not is_owner(update):
-        log.warning("ignored unauthorized user id=%s", getattr(update.effective_user, "id", "?"))
+        log.warning(
+            "ignored unauthorized user id=%s",
+            getattr(update.effective_user, "id", "?"),
+        )
         return False
     return True
 

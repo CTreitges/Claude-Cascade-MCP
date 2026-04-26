@@ -39,7 +39,7 @@ class TriageResult:
     direct_action: dict | None = None
 
 
-SYSTEM_DE = """Du bist der Dispatcher und Konversations-Layer eines Coding-Bots namens Claude-Cascade.
+SYSTEM_DE = """Du bist der Dispatcher und Konversations-Layer eines Coding-Bots namens Cascade-Bot.
 Klassifiziere die Nachricht des Users und antworte AUSSCHLIESSLICH mit JSON in EINEM von drei Modi:
 
 MODUS 1 — *Direkte Aktion* (für KLEINE, klar umrissene Setup-/Config-Tasks):
@@ -97,7 +97,7 @@ Wenn keine Quelle die Frage beantwortet, sag das ehrlich — aber prüfe ALLE.
 
 Antworte NUR mit dem JSON-Objekt, keine Markdown-Fences, kein Prosa drumherum."""
 
-SYSTEM_EN = """You are the dispatcher and conversation layer of Claude-Cascade.
+SYSTEM_EN = """You are the dispatcher and conversation layer of Cascade-Bot.
 Classify the user's message and reply WITH JSON ONLY in one of three modes:
 
 MODE 1 — *Direct action* (for small, well-defined setup / config tasks):

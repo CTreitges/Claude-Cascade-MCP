@@ -235,7 +235,7 @@ async def _on_text_impl(update, ctx, text, lang, s) -> None:
     await remember_fact(
         f"[chat {chat_id}] user: {text[:1500]}",
         importance="low",
-        tags=f"claude-cascade,telegram-chat,chat-{chat_id}",
+        tags=f"cascade-bot-mcp,telegram-chat,chat-{chat_id}",
     )
 
     chat_model_choice = sess_now.get("chat_model") or None
@@ -315,7 +315,7 @@ async def _on_text_impl(update, ctx, text, lang, s) -> None:
             await remember_fact(
                 f"[chat {chat_id}] direct-action {res.kind} ok={res.ok}: {res.summary[:300]}",
                 importance="medium",
-                tags=f"claude-cascade,telegram-chat,chat-{chat_id},direct-action,{res.kind}",
+                tags=f"cascade-bot-mcp,telegram-chat,chat-{chat_id},direct-action,{res.kind}",
             )
             return
 
@@ -323,7 +323,7 @@ async def _on_text_impl(update, ctx, text, lang, s) -> None:
         await remember_fact(
             f"[chat {chat_id}] task dispatched: {dispatched[:500]}",
             importance="medium",
-            tags=f"claude-cascade,telegram-chat,chat-{chat_id},task-dispatch",
+            tags=f"cascade-bot-mcp,telegram-chat,chat-{chat_id},task-dispatch",
         )
         await run_task_for_chat(update, ctx, dispatched)
     else:
@@ -332,7 +332,7 @@ async def _on_text_impl(update, ctx, text, lang, s) -> None:
         await remember_fact(
             f"[chat {chat_id}] bot: {reply[:1500]}",
             importance="low",
-            tags=f"claude-cascade,telegram-chat,chat-{chat_id}",
+            tags=f"cascade-bot-mcp,telegram-chat,chat-{chat_id}",
         )
         await update.effective_message.reply_text(reply)
 
@@ -373,7 +373,7 @@ async def on_voice(update: Update, ctx) -> None:
         await remember_fact(
             f"[chat {chat_id}] voice→task: {text[:500]}",
             importance="medium",
-            tags=f"claude-cascade,telegram-chat,chat-{chat_id},task-dispatch,voice",
+            tags=f"cascade-bot-mcp,telegram-chat,chat-{chat_id},task-dispatch,voice",
         )
         await run_task_for_chat(update, ctx, text)
 
@@ -527,7 +527,7 @@ async def on_photo_or_document(update: Update, ctx) -> None:
                             f"[chat {chat_id}] credential staged: "
                             f"{json_class['kind']} → {proposed} ({json_class['summary']})",
                             importance="high",
-                            tags=f"claude-cascade,credential,chat-{chat_id}",
+                            tags=f"cascade-bot-mcp,credential,chat-{chat_id}",
                         )
                         # Persist as ground-truth user fact so future
                         # cascades see it without having to recall.
@@ -671,7 +671,7 @@ async def on_photo_or_document(update: Update, ctx) -> None:
             f"[chat {chat_id}] received file {doc_meta.get('name', 'photo')} "
             f"({doc_meta.get('mime', '?')}); auto-task dispatched.",
             importance="medium",
-            tags=f"claude-cascade,telegram-chat,chat-{chat_id},file-upload",
+            tags=f"cascade-bot-mcp,telegram-chat,chat-{chat_id},file-upload",
         )
 
         await run_task_for_chat(update, ctx, task_text, attachments=attachments)

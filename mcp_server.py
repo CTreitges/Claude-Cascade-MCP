@@ -23,7 +23,7 @@ from cascade.core import run_cascade
 from cascade.store import Store
 
 log = logging.getLogger("cascade.mcp")
-mcp = FastMCP("claude-cascade")
+mcp = FastMCP("cascade-bot-mcp")
 
 # Per-process registry of currently-running tasks for cancel support.
 _RUNNING: dict[str, tuple[asyncio.Task, asyncio.Event]] = {}

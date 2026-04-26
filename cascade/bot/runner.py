@@ -591,7 +591,7 @@ async def run_task_for_chat(
             f"{result.iterations} iter(s); workspace={result.workspace_path}; "
             f"changed=[{files_str}]; summary={result.summary[:300] if result.summary else '—'}",
             importance="high" if result.status == "done" else "medium",
-            tags=f"claude-cascade,telegram-chat,chat-{chat.id},task-result,"
+            tags=f"cascade-bot-mcp,telegram-chat,chat-{chat.id},task-result,"
                  f"task-{result.task_id}",
         )
         await store.append_chat_message(

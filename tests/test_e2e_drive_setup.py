@@ -44,11 +44,12 @@ from cascade.store import Store
 from cascade.triage import _validate_direct_action
 
 
+# Fake fixture data — generic test names, no real project IDs.
 SA_JSON_LITERAL = json.dumps({
     "type": "service_account",
-    "project_id": "soundcloud-downloader-494512",
-    "client_email": "ultraclaude@soundcloud-downloader-494512.iam.gserviceaccount.com",
-    "private_key_id": "0ffcb619c7d4dummy",
+    "project_id": "test-project-12345",
+    "client_email": "test-sa@test-project-12345.iam.gserviceaccount.com",
+    "private_key_id": "fake-key-id-0001",
     "private_key": "-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n",
 })
 
@@ -73,19 +74,19 @@ async def test_chat_memory_remembers_uploaded_json_after_filler(
     assert classification is not None
     assert classification["kind"] == "google_service_account"
     assert classification["auto_stage_safe"] is True
-    assert classification["project_id"] == "soundcloud-downloader-494512"
+    assert classification["project_id"] == "test-project-12345"
 
     # 12:46
     await cm.append(
         chat_id, "user", "hier die json für drive",
-        file_path="/home/chris/.config/gcloud/soundcloud-downloader-494512-sa.json",
+        file_path="~/.config/gcloud/test-project-12345-sa.json",
         file_content=SA_JSON_LITERAL,
         file_classification=classification,
     )
     # 12:50
     await cm.append(
         chat_id, "bot",
-        "Datei abgelegt unter ~/.config/gcloud/soundcloud-downloader-494512-sa.json (chmod 600)",
+        "Datei abgelegt unter ~/.config/gcloud/test-project-12345-sa.json (chmod 600)",
     )
     # 12:51-12:52 filler chat
     for i in range(3):
@@ -96,7 +97,7 @@ async def test_chat_memory_remembers_uploaded_json_after_filler(
     assert ctx, "build_context returned nothing"
     # The block must contain enough specific anchors for triage to answer:
     assert "google_service_account" in ctx
-    assert "soundcloud-downloader-494512" in ctx
+    assert "test-project-12345" in ctx
     # The actual file content (or its inlined snippet) must be reachable:
     assert "service_account" in ctx
     # Path must show up so the bot can quote it back to the user:
@@ -114,11 +115,11 @@ async def test_short_keyword_recall_finds_credential_finding(tmp_path, monkeypat
     monkeypatch.setattr(mod, "settings", lambda: fake)
 
     await remember_finding(
-        "credential JSON for project soundcloud-downloader-494512 staged at "
-        "/home/chris/.config/gcloud/soundcloud-downloader-494512-sa.json",
+        "credential JSON for project test-project-12345 staged at "
+        "~/.config/gcloud/test-project-12345-sa.json",
         category="fact",
         importance="high",
-        tags="claude-cascade,credential,drive",
+        tags="cascade-bot-mcp,credential,drive",
     )
     # Add a few unrelated entries so we're not testing the trivial case.
     for i in range(5):
@@ -126,7 +127,7 @@ async def test_short_keyword_recall_finds_credential_finding(tmp_path, monkeypat
 
     out = await recall_context("hast du die drive json")
     assert out is not None
-    assert "soundcloud-downloader-494512" in out
+    assert "test-project-12345" in out
     assert "credential" in out.lower()
 
 
