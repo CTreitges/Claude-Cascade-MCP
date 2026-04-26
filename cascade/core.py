@@ -17,8 +17,8 @@ from .agents.planner import Plan, call_planner
 from .agents.reviewer import ReviewResult, call_reviewer
 from .config import Settings, settings
 from .healing import HealingMonitor, HealingState
-from .memory import recall_context, remember_decision, remember_finding
-from .repo_resolver import discover_local_repos, repos_for_planner_prompt, resolve_repo
+from .memory import remember_decision, remember_finding
+from .repo_resolver import resolve_repo
 from .skill_suggester import maybe_suggest_skill
 from .store import Store, Task
 from .workspace import Workspace, cleanup_old_workspaces
@@ -294,67 +294,31 @@ async def run_cascade(
             await healing_monitor.__aexit__(None, None, None)
             raise
 
-        # Recall context (best-effort)
-        recall = await recall_context(task)
-        if recall:
-            await _log(store, task_id, "info", f"recall: {recall[:200]}…")
+        # Bind a logging callback once so the setup helpers below don't
+        # have to know about Store / task_id internals.
+        async def _on_log(level: str, msg: str) -> None:
+            await _log(store, task_id, level, msg)
 
-        # External research: Context7 lib docs + Brave web hits — best-effort,
-        # auto-detected from the task. Block is reused for every agent call
-        # in this run (planner, replan, implementer, reviewer).
-        external_context: str | None = None
-        if s.cascade_context7_enabled or s.cascade_websearch_enabled:
-            try:
-                from .research import gather_external_context
-                external_context = await gather_external_context(
-                    task,
-                    enabled_context7=s.cascade_context7_enabled,
-                    enabled_websearch=s.cascade_websearch_enabled,
-                )
-                if external_context:
-                    await _log(
-                        store, task_id, "info",
-                        f"external_context: {len(external_context)} chars fetched",
-                    )
-            except Exception as e:
-                await _log(store, task_id, "warn", f"external research failed: {e}")
-
-        # Repo-style probe: when running on an existing local repo, sniff
-        # pyproject / .ruff.toml / .editorconfig and prepend a short
-        # markdown block to the planner+implementer context so they match
-        # the existing conventions (line length, package manager, test
-        # runner, type checker).
-        if repo is not None:
-            try:
-                from .style_probe import format_style_hints, probe_repo_style
-                hints = await asyncio.to_thread(probe_repo_style, repo)
-                style_block = format_style_hints(hints, lang=lang)
-                if style_block:
-                    external_context = (
-                        f"{external_context}\n\n{style_block}"
-                        if external_context else style_block
-                    )
-                    await _log(
-                        store, task_id, "info",
-                        f"repo-style hints: {sorted(hints.keys())}",
-                    )
-            except Exception as e:
-                await _log(store, task_id, "warn", f"repo-style probe failed: {e}")
-
-        # Discover local repos so the planner can refer to them by absolute path.
-        # Only relevant when the caller didn't pin a repo themselves.
-        repo_candidates_block: str | None = None
-        if repo is None:
-            try:
-                local_repos = await asyncio.to_thread(discover_local_repos)
-                if local_repos:
-                    repo_candidates_block = repos_for_planner_prompt(local_repos, task)
-                    await _log(
-                        store, task_id, "info",
-                        f"discovered {len(local_repos)} local repos for planner",
-                    )
-            except Exception as e:
-                await _log(store, task_id, "warn", f"repo discovery failed: {e}")
+        # Best-effort context-gathering — recall + external research +
+        # repo-style probe + local-repo discovery. Helpers in
+        # `cascade._core_setup` keep this body readable; behaviour is
+        # identical to the inline blocks they replaced.
+        from ._core_setup import (
+            append_repo_style_hints,
+            discover_repo_candidates_for_planner,
+            fetch_recall_context,
+            gather_external_research,
+        )
+        recall = await fetch_recall_context(task, on_log=_on_log)
+        external_context: str | None = await gather_external_research(
+            task, s=s, on_log=_on_log,
+        )
+        external_context = await append_repo_style_hints(
+            external_context, repo=repo, lang=lang, on_log=_on_log,
+        )
+        repo_candidates_block: str | None = await discover_repo_candidates_for_planner(
+            task, repo=repo, on_log=_on_log,
+        )
 
         await _check_cancel(cancel_event, store, task_id)
 

@@ -19,99 +19,16 @@ from ..runner import run_task_for_chat
 from ..typing import TypingIndicator
 
 
-def _classify_uploaded_json(text: str) -> dict | None:
-    """If `text` looks like a recognizable JSON config/credential, return a
-    classification dict {kind, summary, suggested_target, auto_stage_safe} —
-    else None.
-
-    `auto_stage_safe=True` means: the classification is unambiguous AND the
-    suggested_target is a path the bot would always pick for this kind.
-    The smart-document handler stages those WITHOUT asking the user.
-    """
-    import json
-    try:
-        data = json.loads(text)
-    except Exception:
-        return None
-    if not isinstance(data, dict):
-        return {
-            "kind": "generic_json", "summary": "JSON data",
-            "suggested_target": None, "auto_stage_safe": False,
-        }
-
-    if data.get("type") == "service_account" and "client_email" in data:
-        project_id = data.get("project_id") or "unknown"
-        return {
-            "kind": "google_service_account",
-            "summary": (
-                f"Google Service-Account "
-                f"({data.get('client_email', '?')}, "
-                f"project={project_id})"
-            ),
-            "client_email": data.get("client_email"),
-            "project_id": project_id,
-            "suggested_target": f"~/.config/gcloud/{project_id}-sa.json",
-            "auto_stage_safe": True,
-        }
-    if "installed" in data or "web" in data:
-        sub = data.get("installed") or data.get("web") or {}
-        if "client_id" in sub and "client_secret" in sub:
-            return {
-                "kind": "google_oauth_client",
-                "summary": "Google OAuth client credentials",
-                "suggested_target": "~/.config/gcloud/oauth-client.json",
-                "auto_stage_safe": True,
-            }
-    # AWS credentials — sometimes shipped as JSON via `aws sts ...`
-    if (
-        "AccessKeyId" in data and "SecretAccessKey" in data
-    ) or (
-        "aws_access_key_id" in data and "aws_secret_access_key" in data
-    ):
-        return {
-            "kind": "aws_credentials",
-            "summary": "AWS access-key credentials",
-            "suggested_target": "~/.aws/credentials.json",
-            "auto_stage_safe": False,  # proper home is INI, not JSON — confirm with user
-        }
-    if "api_key" in data and isinstance(data.get("api_key"), str):
-        return {
-            "kind": "openai_credentials",
-            "summary": "OpenAI-style {api_key: ...} credential file",
-            "suggested_target": None,  # belongs in .env, not as file
-            "auto_stage_safe": False,
-        }
-    return {
-        "kind": "generic_config_json",
-        "summary": f"JSON config with keys: {', '.join(list(data.keys())[:6])}",
-        "suggested_target": None,
-        "auto_stage_safe": False,
-    }
-
-
-def _classify_uploaded_text(name: str, text: str) -> dict | None:
-    """Soft classification for non-JSON text uploads. Used to set
-    `file_classification` on chat_messages so the recall layer has structure
-    to grep on, even though we don't auto-stage these."""
-    if not text:
-        return None
-    name_lower = (name or "").lower()
-    head = text.lstrip()[:200]
-    if name_lower.endswith((".md", ".markdown")):
-        return {"kind": "markdown_doc", "summary": f"Markdown ({len(text)}B)"}
-    if name_lower == "requirements.txt" or name_lower.endswith("/requirements.txt"):
-        return {"kind": "requirements_txt", "summary": "Python requirements list"}
-    if name_lower.endswith(".py") or head.startswith(("#!/usr/bin/env python", "import ", "from ")):
-        return {"kind": "python_script", "summary": f"Python source ({len(text)}B)"}
-    if name_lower.endswith(".env") or ".env." in name_lower:
-        return {"kind": "dotenv_snippet", "summary": "dotenv KEY=VALUE list"}
-    # Heuristic: lines look like KEY=VALUE
-    lines = [ln for ln in text.splitlines() if ln.strip()]
-    if lines and sum(1 for ln in lines if "=" in ln and not ln.lstrip().startswith("#")) >= max(1, len(lines) // 2):
-        return {"kind": "dotenv_snippet", "summary": f"KEY=VALUE list ({len(lines)} lines)"}
-    return None
-
 log = logging.getLogger("cascade.bot.messages")
+
+
+# Backwards-compat re-exports — older tests/imports may still reach in
+# for the underscore-prefixed names. The real implementations live in
+# `cascade.upload_classifier` now.
+from cascade.upload_classifier import (  # noqa: E402
+    classify_uploaded_json as _classify_uploaded_json,
+    classify_uploaded_text as _classify_uploaded_text,
+)
 
 
 async def on_text(update: Update, ctx) -> None:

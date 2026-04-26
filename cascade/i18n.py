@@ -309,6 +309,20 @@ _STRINGS: dict[str, dict[Lang, str]] = {
 }
 
 
+def de_en(de: str, en: str, lang: str = "de") -> str:
+    """Pick a German or English string by `lang`.
+
+    Cuts down on the ~150 ad-hoc `"X" if lang == "de" else "Y"` ternaries
+    sprinkled across the bot — most of them are inline strings that don't
+    deserve their own i18n key, but the ternary makes long expressions
+    unreadable. `de_en("Antwort", "answer", lang)` reads cleanly.
+
+    Default falls back to German when `lang` is anything other than "en"
+    (defensive — covers `None`, empty string, accidental "EN", etc.).
+    """
+    return en if lang == "en" else de
+
+
 def t(key: str, *, lang: Lang = "de", **vars) -> str:
     entry = _STRINGS.get(key)
     if not entry:

@@ -6,7 +6,7 @@ from telegram import Update
 from telegram.constants import ParseMode
 
 from cascade.config import settings
-from cascade.i18n import t
+from cascade.i18n import de_en, t
 from cascade.store import Store
 
 from ..helpers import lang_for, owner_only
@@ -265,7 +265,7 @@ async def cmd_errors(update: Update, ctx) -> None:
         n = 5
     entries = tail_errors(n)
     if not entries:
-        msg = "Keine Fehler im Log." if lang == "de" else "No errors logged."
+        msg = de_en("Keine Fehler im Log.", "No errors logged.", lang)
         await update.effective_message.reply_text(msg)
         return
 
@@ -276,7 +276,7 @@ async def cmd_errors(update: Update, ctx) -> None:
     except Exception:
         zi = None
 
-    lines = ["*Letzte Fehler:*" if lang == "de" else "*Recent errors:*", ""]
+    lines = [de_en("*Letzte Fehler:*", "*Recent errors:*", lang), ""]
     for e in reversed(entries):
         dt = datetime.datetime.fromtimestamp(e.get("ts", 0), tz=zi) if zi else datetime.datetime.fromtimestamp(e.get("ts", 0))
         ts = dt.strftime("%H:%M:%S")
