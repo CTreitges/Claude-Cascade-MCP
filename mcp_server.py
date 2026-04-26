@@ -218,6 +218,69 @@ async def cascade_history(limit: int = 10) -> list[dict]:
 
 
 @mcp.tool()
+async def cascade_progress(
+    task_id: str,
+    after_ts: float = 0.0,
+    lang: str = "de",
+    n: int = 200,
+) -> dict:
+    """Render the latest progress events for a task as ready-to-display
+    milestone lines. Same formatter the Telegram bot uses, so the
+    `/cascade` slash-command shows IDENTICAL output.
+
+    Args:
+      task_id: the run to inspect.
+      after_ts: only return milestones logged after this unix-ts —
+        used as a cursor by the polling loop (pass `last_ts` from
+        the previous call). 0.0 = from the start.
+      lang: `"de"` or `"en"`. Defaults to German.
+      n: how many recent log entries to scan (max 500).
+
+    Returns:
+      {
+        "status": "<task status>",
+        "iteration": <int>,
+        "lines": [<rendered milestone line>, ...],
+        "last_ts": <highest ts in this batch>,
+        "task_id": <id>,
+      }
+    """
+    n = max(1, min(int(n), 500))
+    s = settings()
+    store = await Store.open(s.cascade_db_path)
+    try:
+        t = await store.get_task(task_id)
+        if t is None:
+            return {"error": "not found", "task_id": task_id}
+        entries = await store.tail_logs(task_id, n=n)
+    finally:
+        await store.close()
+
+    from cascade.progress_format import format_milestone, parse_log_message
+    out_lines: list[str] = []
+    last_ts = float(after_ts)
+    for e in entries:
+        if e.ts <= after_ts:
+            continue
+        if e.ts > last_ts:
+            last_ts = e.ts
+        parsed = parse_log_message(e.message)
+        if not parsed:
+            continue
+        event, payload = parsed
+        for line in format_milestone(event, payload, lang=lang):
+            if line:
+                out_lines.append(line)
+    return {
+        "task_id": task_id,
+        "status": t.status,
+        "iteration": t.iteration,
+        "lines": out_lines,
+        "last_ts": last_ts,
+    }
+
+
+@mcp.tool()
 async def cascade_summary(task_id: str, include_diff: bool = False) -> dict:
     """One-shot status + plan + changed-files + reviewer feedback + diff
     excerpt for a cascade task. Used by the `/cascade` slash-command so
