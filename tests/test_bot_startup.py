@@ -85,6 +85,10 @@ def test_main_builds_application_without_crashing(monkeypatch):
             captured["post_shutdown"] = fn
             return self
 
+        def concurrent_updates(self, flag):
+            captured["concurrent_updates"] = flag
+            return self
+
         def build(self):
             return FakeApp()
 

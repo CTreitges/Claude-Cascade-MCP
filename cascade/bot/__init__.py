@@ -50,6 +50,11 @@ from .handlers.general import (
     cmd_whoami,
 )
 from .handlers.messages import on_photo_or_document, on_text, on_voice
+from .handlers.lifecycle_cmd import (
+    cmd_restart,
+    cmd_shutdown,
+    on_lifecycle_callback,
+)
 from .handlers.setup import cmd_setup
 from .handlers.skills import cmd_run_skill, cmd_skills, cmd_skillupgrade, on_skill_callback
 from .handlers.system import cmd_exec, cmd_git, cmd_projects
@@ -93,6 +98,12 @@ def main() -> None:
     app = (
         Application.builder()
         .token(s.telegram_bot_token)
+        # CRITICAL: process updates concurrently. Without this PTB serializes
+        # every update — while one `on_text` is busy with a 10-15 s triage
+        # call, every other incoming message waits in the queue, and the bot
+        # *appears* frozen during a running cascade. With concurrent_updates
+        # each update gets its own asyncio.Task, so chat keeps flowing.
+        .concurrent_updates(True)
         .post_init(post_init)
         .post_shutdown(post_shutdown)
         .build()
@@ -136,6 +147,8 @@ def main() -> None:
     app.add_handler(CommandHandler("run", cmd_run_skill))
     app.add_handler(CommandHandler("skillupgrade", cmd_skillupgrade))
     app.add_handler(CommandHandler("setup", cmd_setup))
+    app.add_handler(CommandHandler("shutdown", cmd_shutdown))
+    app.add_handler(CommandHandler("restart", cmd_restart))
 
     # System
     app.add_handler(CommandHandler("exec", cmd_exec))
@@ -154,6 +167,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(on_action_callback, pattern=r"^act:"))
     from .handlers.resume_kbd import on_resume_callback
     app.add_handler(CallbackQueryHandler(on_resume_callback, pattern=r"^resume:"))
+    app.add_handler(CallbackQueryHandler(on_lifecycle_callback, pattern=r"^life:"))
 
     # Free-form messages
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, on_voice))
