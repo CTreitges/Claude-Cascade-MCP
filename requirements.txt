@@ -1,0 +1,22 @@
+# Runtime requirements for Claude-Cascade.
+#
+# Install: pip install -r requirements.txt
+# Or use the editable install for development: pip install -e ".[dev]"
+#
+# All deps mirror pyproject.toml [project.dependencies]; pinned with
+# `>=` so the lockfile stays open while still flagging too-old installs.
+
+anthropic>=0.40
+ollama>=0.4
+openai>=1.50
+python-telegram-bot[ext]>=21.6
+aiosqlite>=0.20
+pydantic>=2.7
+pydantic-settings>=2.4
+mcp>=1.2
+httpx>=0.27
+python-dotenv>=1.0
+
+# Optional but commonly useful — comment out if you don't want them:
+# rapidfuzz>=3.9   # faster fuzzy ranking for recall_context (we have a fallback)
+# pyyaml>=6.0      # enables YAML pre-write validation in workspace.apply_ops

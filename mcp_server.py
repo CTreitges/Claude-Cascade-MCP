@@ -61,7 +61,7 @@ async def run_cascade_tool(
         polling via cascade_status / cascade_logs.
       timeout_s: only used when sync=True.
       implementer_model: override the runtime default (qwen3-coder:480b);
-        e.g. "kimi-k2.6", "glm-5.1", "minimax-m2.7", "deepseek-v4-flash".
+        e.g. "kimi-k2.6", "glm-5.1", "minimax-m2.7", "deepseek-v3.2".
       planner_model / reviewer_model: override the Claude models for this run.
       planner_effort / reviewer_effort: claude-cli --effort flag.
       replan_max: how often the planner may rewrite the plan if the loop
@@ -352,7 +352,8 @@ async def cascade_skill_run(
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    from cascade.logging_config import setup_logging
+    setup_logging()
     mcp.run()
 
 

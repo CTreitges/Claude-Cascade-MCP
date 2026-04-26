@@ -1,0 +1,23 @@
+{
+  "name": "cascade-bot-mcp",
+  "version": "0.2.0",
+  "description": "npx wrapper that launches the Cascade-Bot MCP server (Python).",
+  "license": "MIT",
+  "bin": {
+    "cascade-bot-mcp": "./bin/cascade-bot-mcp.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CTreitges/cascade-bot-mcp.git"
+  },
+  "keywords": [
+    "mcp",
+    "claude",
+    "cascade",
+    "agent",
+    "code-generation"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

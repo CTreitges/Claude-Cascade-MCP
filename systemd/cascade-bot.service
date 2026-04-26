@@ -11,6 +11,14 @@ EnvironmentFile=%h/claude-cascade/.env
 ExecStart=%h/claude-cascade/.venv/bin/python %h/claude-cascade/bot.py
 Restart=on-failure
 RestartSec=5
+# Graceful-shutdown window (default is 90s — too short for cascades with
+# active LLM-subprocesses). 180s gives `post_shutdown` time to mark
+# running tasks as `interrupted` and let in-flight handlers flush.
+TimeoutStopSec=180
+# Send SIGTERM to the main bot process; let it propagate to children.
+# After TimeoutStopSec, mixed mode SIGKILLs the whole cgroup.
+KillSignal=SIGTERM
+KillMode=mixed
 StandardOutput=journal
 StandardError=journal
 

@@ -14,7 +14,14 @@ import pytest
 def test_implementer_ctx_returns_known_values():
     from cascade.models import implementer_ctx
 
-    for tag in ["qwen3-coder:480b", "glm-5.1", "kimi-k2.6", "minimax-m2.7", "deepseek-v4-flash"]:
+    for tag in [
+        "qwen3-coder:480b",
+        "qwen3.5:397b",
+        "glm-5.1",
+        "kimi-k2.6",
+        "minimax-m2.7",
+        "deepseek-v4-flash",
+    ]:
         assert implementer_ctx(tag) >= 100_000
 
 
@@ -122,3 +129,104 @@ async def test_remember_handles_extra_dict(isolated_memory: Path):
     entry = json.loads((isolated_memory / "store" / "memory.jsonl").read_text().splitlines()[0])
     assert entry["task_id"] == "abc123"
     assert entry["iters"] == 3
+
+
+# ---- BM25 recall ----
+
+
+def test_tokenize_filters_stopwords_and_short_tokens():
+    from cascade.memory import _tokenize
+
+    toks = _tokenize("The quick brown FOX jumps for the lazy dog at 12 am")
+    assert "the" not in toks
+    assert "for" not in toks
+    assert "quick" in toks
+    assert "brown" in toks
+    assert "fox" in toks
+    # 2-letter "am" + "12" are below min_len=3 / not alnum-only enough
+    assert "am" not in toks
+
+
+def test_tokenize_handles_german_stopwords_and_diacritics():
+    from cascade.memory import _tokenize
+
+    toks = _tokenize("Der Bot soll für mich die Datei ablegen")
+    assert "der" not in toks  # stopword
+    assert "die" not in toks  # stopword
+    assert "für" not in toks  # stopword
+    assert "datei" in toks
+    assert "ablegen" in toks
+
+
+async def test_recall_ranks_relevant_above_unrelated(isolated_memory: Path):
+    from cascade.memory import recall_context, remember_finding
+
+    # Lots of noise + one clearly relevant finding about JSON credentials
+    for i in range(8):
+        await remember_finding(f"unrelated note number {i}", tags="misc")
+    await remember_finding(
+        "user uploaded google service account JSON credentials for soundcloud project",
+        tags="credentials,google,scdl",
+        importance="high",
+    )
+    await remember_finding(
+        "discussion about telegram bot startup procedure",
+        tags="bot,startup",
+    )
+
+    out = await recall_context("google credentials json soundcloud")
+    assert out is not None
+    # The relevant entry must come FIRST
+    first_line = out.splitlines()[0]
+    assert "google service account" in first_line.lower()
+
+
+async def test_recall_short_keywords_now_match(isolated_memory: Path):
+    """Old impl required >4-char words — now min_len=3, so 'json' (4) and
+    'env' (3) should both work."""
+    from cascade.memory import recall_context, remember_finding
+
+    await remember_finding("placed json file in config dir", tags="config")
+    await remember_finding("set FOO env in .env file", tags="env")
+
+    out_json = await recall_context("the json")  # only 'json' is 4 chars
+    assert out_json is not None
+    assert "json" in out_json.lower()
+
+    out_env = await recall_context("env file")  # both 3-char
+    assert out_env is not None
+    assert "env" in out_env.lower()
+
+
+async def test_recall_importance_boost(isolated_memory: Path):
+    """All else equal, a `high`/`critical` importance entry should rank
+    above a `low` one with the same content overlap."""
+    from cascade.memory import recall_context, remember_finding
+
+    await remember_finding(
+        "drive folder id setup procedure",
+        tags="drive", importance="low",
+    )
+    # Add some noise so n_docs > 2
+    for i in range(5):
+        await remember_finding(f"noise {i}", tags="noise")
+    await remember_finding(
+        "drive folder id setup procedure",
+        tags="drive", importance="critical",
+    )
+
+    out = await recall_context("drive folder id setup")
+    assert out is not None
+    # critical should appear before low
+    lines = out.splitlines()
+    crit_idx = next(i for i, ln in enumerate(lines) if "critical" in ln)
+    low_idx = next(i for i, ln in enumerate(lines) if "/low " in ln)
+    assert crit_idx < low_idx
+
+
+async def test_recall_returns_none_when_no_match(isolated_memory: Path):
+    from cascade.memory import recall_context, remember_finding
+
+    await remember_finding("apple banana cherry", tags="fruit")
+    out = await recall_context("xenoarchitecture quaternary")
+    assert out is None

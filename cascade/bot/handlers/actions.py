@@ -28,11 +28,40 @@ async def on_action_callback(update: Update, ctx) -> None:
         if not task:
             await q.edit_message_reply_markup(reply_markup=None)
             return
-        await q.message.reply_text(
-            f"🔄 Wiederhole: {(task.task_text or '')[:200]}" if lang == "de"
-            else f"🔄 Re-running: {(task.task_text or '')[:200]}"
-        )
-        await run_task_for_chat(update, ctx, task.task_text)
+        # Fresh re-run with "lessons learned": if the previous run didn't
+        # finish cleanly, harvest the last reviewer feedback and prepend it
+        # to the task text so the brand-new planner starts already aware of
+        # what tripped up the previous attempt.
+        augmented = task.task_text or ""
+        lessons = ""
+        if task.status in ("failed", "interrupted", "cancelled"):
+            iters = await store.list_iterations(tid)
+            for it in reversed(iters):
+                if it.reviewer_feedback and it.reviewer_pass is False:
+                    lessons = it.reviewer_feedback.strip()
+                    break
+            if lessons:
+                hint_header = (
+                    "ERFAHRUNGEN AUS DEM LETZTEN VERSUCH (vermeide diese Fehler)"
+                    if lang == "de"
+                    else "LESSONS FROM PREVIOUS ATTEMPT (avoid these mistakes)"
+                )
+                augmented = (
+                    f"{task.task_text}\n\n"
+                    f"--- {hint_header} ---\n{lessons[:1500]}"
+                )
+        if lessons:
+            await q.message.reply_text(
+                f"🔄 Neuer Anlauf mit Lessons Learned aus Task `{tid}`."
+                if lang == "de"
+                else f"🔄 Fresh attempt with lessons learned from task `{tid}`."
+            )
+        else:
+            await q.message.reply_text(
+                f"🔄 Wiederhole: {(task.task_text or '')[:200]}" if lang == "de"
+                else f"🔄 Re-running: {(task.task_text or '')[:200]}"
+            )
+        await run_task_for_chat(update, ctx, augmented)
         return
     if action == "diff":
         iters = await store.list_iterations(tid)

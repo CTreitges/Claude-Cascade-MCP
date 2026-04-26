@@ -1,10 +1,13 @@
-# Claude-Cascade
+# cascade-bot-mcp
 
 Multi-Agent **Plan → Implement → Review** loop with hard-gated quality checks,
-auto-replan, auto-skill-suggestion, and three interfaces:
+persistent chat memory, self-healing retries, and three interfaces:
 
 - **MCP-Server** for Claude Code (`mcp__cascade__*`)
-- **Telegram-Bot** with voice / vision / shell / git
+- **Telegram-Bot** with voice / vision / shell / git, persistent chat
+  memory (FTS5 + BM25 RLM-Recall), inline-keyboard resume confirmation,
+  auto-stage of credentials, heartbeats during long runs, guided
+  `/setup` wizard for API keys
 - **CLI** (`cascade "<task>"`)
 
 ---
@@ -14,23 +17,44 @@ auto-replan, auto-skill-suggestion, and three interfaces:
 ```
 Telegram / Claude Code (MCP) / CLI
               │
-              ▼
-   ┌──────────────────────────────┐
-   │  Cascade Core (asyncio)      │
-   │  Plan → Implement → Review   │
-   │  + Quality-Checks (hard gate)│
-   │  + Replan-on-Failure         │
-   └──────────┬───────────────────┘
+              ▼  Triage (3-mode: chat / direct_action / cascade)
+   ┌──────────────────────────────────────┐
+   │  Cascade Core (asyncio)              │
+   │  Plan → Implement → Review           │
+   │  + Quality-Checks (hard gate)        │
+   │  + Replan-on-Failure                 │
+   │  + Stagnation-Detection (force replan│
+   │    on identical reviewer feedback)   │
+   │  + HealingMonitor (stuck/perm-denied │
+   │    diagnostic events)                │
+   │  + with_retry (7-day budget — auto-  │
+   │    waits Claude weekly-session caps) │
+   └──────────┬───────────────────────────┘
               │
    ┌──────────┼─────────────────────────┐
    ▼          ▼            ▼            ▼
 Planner   Implementer   Reviewer    Skill-
 (Claude)  (Cloud LLM)   (Claude)    Suggester
-                                    (Claude)
+DE/EN     +shortcut     strict      (Claude)
               │
               ▼
-       SQLite + RLM
+       SQLite (chat_messages + FTS5 +
+       chat_summaries + pending_attachments
+       + iterations + skills) + RLM (BM25)
 ```
+
+The bot's chat-memory layer keeps:
+
+- **Hot tier** — last 30 messages verbatim with inline file content (≤30KB
+  per upload) and a JSON classification (e.g. `google_service_account`).
+- **Warm tier** — older messages → Sonnet-summarised in a background task
+  every 6h.
+- **Long tier** — RLM (BM25 ranking + DE/EN stop-words + importance boost).
+
+`build_context()` ships the structured block (USER FACTS · RECENT UPLOADS ·
+CONVERSATION · EARLIER · SEARCH HITS) to the triage prompt, which also gets
+strict path-prevalidation against `simple_actions._ALLOWED_ROOTS` for any
+proposed direct-action target.
 
 | Worker        | Default Model        | Configurable via |
 |---------------|----------------------|------------------|
@@ -44,31 +68,73 @@ Planner   Implementer   Reviewer    Skill-
 
 ## Setup
 
+### 1. Clone + install dependencies
+
 ```bash
-git clone https://github.com/CTreitges/Claude-Cascade-MCP.git ~/claude-cascade
+git clone https://github.com/CTreitges/cascade-bot-mcp.git ~/claude-cascade
 cd ~/claude-cascade
 python3 -m venv .venv
-.venv/bin/pip install -e ".[dev]"
-
-cp .env.example .env
-# Required: TELEGRAM_BOT_TOKEN, TELEGRAM_OWNER_ID, OLLAMA_CLOUD_API_KEY
-# Optional: OPENAI_API_KEY (for Whisper voice transcription)
-
-.venv/bin/pytest -q          # 144 tests should be green
+.venv/bin/pip install -r requirements.txt        # runtime
+# or for development:
+# .venv/bin/pip install -r requirements-dev.txt  # + pytest, ruff
 ```
 
-### CLI smoke-test
+### 2. Bootstrap minimum config
+
+The bot needs **two** values up front; everything else is filled in by the
+`/setup` wizard inside Telegram:
 
 ```bash
+cp .env.example .env
+# Edit .env and set:
+#   TELEGRAM_BOT_TOKEN=...   (from @BotFather)
+#   TELEGRAM_OWNER_ID=...    (your numeric user id, from @userinfobot)
+```
+
+Don't bother filling in API keys yet — start the bot, send `/setup`, and
+it walks you through Ollama / OpenAI / Brave / GitHub one prompt at a
+time. Answers go into `secrets.env` (gitignored, chmod 0600). Your
+`.env` is never overwritten.
+
+### 3. (Optional) Install RLM-Claude for long-term memory
+
+The bot works without it (falls back to a local JSONL), but RLM-Claude
+gives BM25-ranked recall across runs.
+
+```bash
+# Linux / WSL native:
+bash scripts/install-rlm-claude.sh
+
+# Windows host (will guide you through WSL2):
+pwsh -File scripts/install-rlm-claude.ps1
+```
+
+### 4. Run tests + smoke-test the CLI
+
+```bash
+.venv/bin/pytest -q          # all tests should be green
 .venv/bin/cascade "Erstelle hello.py das 'hi' druckt"
 ```
 
-### Register MCP server in Claude Code
+### 5. Register MCP server with Claude Code
 
+Three options — pick whichever you prefer:
+
+**A) Direct (no Node needed):**
 ```bash
 claude mcp add cascade --scope user -- \
-  /home/chris/claude-cascade/.venv/bin/python \
-  /home/chris/claude-cascade/mcp_server.py
+  ~/claude-cascade/.venv/bin/python ~/claude-cascade/mcp_server.py
+```
+
+**B) Via the launcher script (auto-resolves venv / pipx):**
+```bash
+claude mcp add cascade --scope user -- \
+  bash ~/claude-cascade/scripts/mcp-launcher.sh
+```
+
+**C) Via npx wrapper (zero Python-path knowledge needed):**
+```bash
+claude mcp add cascade -- npx -y cascade-bot-mcp
 ```
 
 In a new Claude Code session:
@@ -83,7 +149,14 @@ mcp__cascade__cascade_history(limit=10)
 
 There's also a `/cascade <task>` slash-command at `~/.claude/commands/cascade.md`.
 
-### Telegram bot as systemd-user-service
+### Windows users
+
+Run everything inside WSL2 (Ubuntu). The Python parts are tested on
+Linux only — RLM-Claude in particular is Linux-native. The PowerShell
+helper `scripts/install-rlm-claude.ps1` will check your WSL setup and
+forward the install into the right distro for you.
+
+### 6. Telegram bot as systemd-user-service
 
 ```bash
 mkdir -p ~/.config/systemd/user

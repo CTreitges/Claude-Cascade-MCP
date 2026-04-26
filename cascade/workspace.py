@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -31,6 +32,59 @@ class FileOp(BaseModel):
         return v
 
 
+def _find_function_stubs(tree) -> list[str]:
+    """Return the names of functions/methods whose body is JUST a stub —
+    i.e. `pass` (single statement), `...` (Ellipsis-as-stmt) or
+    `raise NotImplementedError(...)`. Used by Workspace._validate_content
+    to refuse writing half-baked code. A function with a docstring +
+    `pass` IS still a stub for our purposes — implementer should put a
+    real body."""
+    import ast as _ast
+    out: list[str] = []
+    for node in _ast.walk(tree):
+        if not isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            continue
+        body = list(node.body)
+        # Skip a single docstring at the top (still considered a stub if
+        # nothing else follows it).
+        if (
+            body
+            and isinstance(body[0], _ast.Expr)
+            and isinstance(body[0].value, _ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            body = body[1:]
+        if len(body) != 1:
+            continue
+        stmt = body[0]
+        is_stub = False
+        if isinstance(stmt, _ast.Pass):
+            is_stub = True
+        elif (
+            isinstance(stmt, _ast.Expr)
+            and isinstance(stmt.value, _ast.Constant)
+            and stmt.value.value is Ellipsis
+        ):
+            is_stub = True
+        elif isinstance(stmt, _ast.Raise):
+            exc = stmt.exc
+            if exc is None:
+                pass  # bare `raise` is for re-raise inside except — not a stub
+            elif (
+                isinstance(exc, _ast.Name) and exc.id == "NotImplementedError"
+            ):
+                is_stub = True
+            elif (
+                isinstance(exc, _ast.Call)
+                and isinstance(exc.func, _ast.Name)
+                and exc.func.id == "NotImplementedError"
+            ):
+                is_stub = True
+        if is_stub:
+            out.append(node.name)
+    return out
+
+
 @dataclass
 class OpResult:
     op: str
@@ -52,8 +106,14 @@ class CheckResult:
     duration_s: float
 
 
+class WorkspaceLockError(WorkspaceError):
+    """Raised when another live cascade run already holds the workspace lock."""
+
+
 class Workspace:
     """A sandboxed working directory backed by git for diffs."""
+
+    LOCK_FILENAME = ".cascade-lock"
 
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
@@ -63,22 +123,81 @@ class Workspace:
         # iter-N commits there (it pollutes their history). Diffs use base_ref.
         self.is_attached: bool = False
         self.base_ref: str | None = None
+        self._lock_pid: int | None = None
+
+    # ---------- locking ----------
+
+    def _lock_path(self) -> Path:
+        return self.root / self.LOCK_FILENAME
+
+    def _pid_alive(self, pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+            return True
+        except (ProcessLookupError, PermissionError):
+            return False
+        except Exception:
+            return False
+
+    def acquire_lock(self) -> None:
+        """Refuse to start if another live cascade pid is already running
+        in this workspace. Stale locks (dead pid) are reaped automatically.
+        """
+        lock = self._lock_path()
+        if lock.exists():
+            try:
+                content = lock.read_text(encoding="utf-8").strip()
+                pid = int(content.split()[0]) if content else 0
+            except Exception:
+                pid = 0
+            if pid and self._pid_alive(pid) and pid != os.getpid():
+                raise WorkspaceLockError(
+                    f"workspace {self.root} is locked by live pid {pid} — "
+                    f"another cascade is already running here. Cancel that "
+                    f"task first or wait for it to finish."
+                )
+            # stale → silently reclaim
+        try:
+            lock.write_text(f"{os.getpid()}\n{time.time():.0f}", encoding="utf-8")
+            self._lock_pid = os.getpid()
+        except Exception:  # never let lock-management break the run itself
+            pass
+
+    def release_lock(self) -> None:
+        if self._lock_pid is None:
+            return
+        try:
+            self._lock_path().unlink(missing_ok=True)
+        except Exception:
+            pass
+        self._lock_pid = None
 
     # ---------- factory / lifecycle ----------
 
     @classmethod
     def create(cls, base_dir: Path, task_id: str | None = None) -> "Workspace":
+        """Create or re-attach to a workspace directory.
+
+        Idempotent: if `base_dir/task_id` already exists (e.g. from a resumed
+        run, a retried spawn, or a previous crash), we re-use it instead of
+        crashing with FileExistsError. Git init / initial commit are skipped
+        when `.git` is already present.
+        """
         base_dir = Path(base_dir)
         base_dir.mkdir(parents=True, exist_ok=True)
         tid = task_id or uuid.uuid4().hex[:12]
         root = (base_dir / tid).resolve()
-        root.mkdir(parents=True, exist_ok=False)
+        already_existed = root.exists()
+        root.mkdir(parents=True, exist_ok=True)
         ws = cls(root)
-        ws._git(["init", "-q"])
-        ws._git(["config", "user.email", "cascade@local"])
-        ws._git(["config", "user.name", "Cascade"])
-        # Empty initial commit so `git diff HEAD` works from the very first iteration.
-        ws._git(["commit", "--allow-empty", "-q", "-m", "init"])
+        if not (root / ".git").exists():
+            ws._git(["init", "-q"])
+            ws._git(["config", "user.email", "cascade@local"])
+            ws._git(["config", "user.name", "Cascade"])
+            ws._git(["commit", "--allow-empty", "-q", "-m", "init"])
+        elif not already_existed:
+            # extreme edge: dir was racey-created by another path. fall through.
+            pass
         return ws
 
     @classmethod
@@ -88,6 +207,10 @@ class Workspace:
         Records the current HEAD as `base_ref` so subsequent diffs only show what
         Cascade itself changed — and crucially, suppresses iter-N commits that
         would otherwise pollute the user's history.
+
+        For non-git directories: bootstraps a local `.git` so changed_paths()
+        and the reviewer-diff still work. The user's existing files become
+        the base_ref so we still only report what Cascade itself wrote.
         """
         ws = cls(Path(repo_path))
         ws.is_attached = True
@@ -95,6 +218,24 @@ class Workspace:
             r = ws._git(["rev-parse", "HEAD"])
             if r.returncode == 0:
                 ws.base_ref = r.stdout.strip() or None
+            return ws
+        # Bootstrap a local-only git so diffs still work in attached mode.
+        ws._git(["init", "-q"])
+        ws._git(["config", "user.email", "cascade@local"])
+        ws._git(["config", "user.name", "cascade"])
+        # Common noise that shouldn't show up in changed_files reporting.
+        gitignore = ws.root / ".gitignore"
+        if not gitignore.exists():
+            gitignore.write_text(
+                "__pycache__/\n*.pyc\n*.pyo\n.pytest_cache/\n.venv/\nvenv/\n"
+                "node_modules/\n.DS_Store\n"
+            )
+        ws._git(["add", "-A"])
+        # Empty dir is fine — commit anyway with --allow-empty so HEAD exists.
+        ws._git(["commit", "-q", "--allow-empty", "-m", "cascade base"])
+        r = ws._git(["rev-parse", "HEAD"])
+        if r.returncode == 0:
+            ws.base_ref = r.stdout.strip() or None
         return ws
 
     def cleanup(self) -> None:
@@ -111,14 +252,118 @@ class Workspace:
 
     # ---------- file ops ----------
 
+    # Generated artifacts the implementer should NEVER touch — writing to
+    # them is almost always a sign that the model targeted the compiled
+    # bytecode instead of the source file. Caused a real prod-loop where
+    # the implementer wrote .pyc files and the reviewer kept saying
+    # "source not modified".
+    _GENERATED_PATH_RX = re.compile(
+        r"(^|/)(__pycache__/|\.pyc$|\.pyo$|\.so$|\.dylib$|node_modules/|"
+        r"\.next/|dist/|build/|target/|\.venv/|venv/)"
+    )
+
+    @staticmethod
+    def _validate_content(path: str, content: str) -> None:
+        """Pre-write quality gate. Raises WorkspaceError when the content
+        is obviously broken so the implementer gets a precise reviewer-
+        style hint on the next iteration instead of a confusing crash
+        deep in pytest / py_compile / etc.
+
+        Checks:
+          - .py: ast.parse() — catches missing colons, unbalanced parens,
+            etc. before they hit the workspace.
+          - .json: json.loads()
+          - .yaml/.yml: yaml.safe_load() if PyYAML is available
+          - .toml: tomllib.loads() (Python 3.11+)
+          - Stub-detection on .py: function bodies that consist only of
+            `raise NotImplementedError`, bare `pass`, or `...` are flagged
+            ONLY if they're newly introduced by this op (we re-read the
+            file we're about to overwrite to compare).
+
+        The stub check is conservative: a `pass` with a comment like
+        `pass  # placeholder` IS allowed, because the comment may carry
+        intent. Only true stubs caught by AST count.
+        """
+        if not content:
+            return
+        # Lightweight extension-based dispatch.
+        lower = path.lower()
+        try:
+            if lower.endswith(".py"):
+                import ast as _ast
+                try:
+                    tree = _ast.parse(content)
+                except SyntaxError as e:
+                    raise WorkspaceError(
+                        f"python syntax error in {path}: line {e.lineno}, "
+                        f"col {e.offset}: {e.msg}"
+                    ) from e
+                # Stub-detection
+                stubs = _find_function_stubs(tree)
+                if stubs:
+                    names = ", ".join(stubs[:5])
+                    raise WorkspaceError(
+                        f"refusing to write {path}: function(s) {names} "
+                        f"are stubs (raise NotImplementedError / bare pass / "
+                        f"`...`). Implement the body or remove the function."
+                    )
+            elif lower.endswith(".json"):
+                import json as _json
+                try:
+                    _json.loads(content)
+                except _json.JSONDecodeError as e:
+                    raise WorkspaceError(
+                        f"json parse error in {path}: line {e.lineno}, "
+                        f"col {e.colno}: {e.msg}"
+                    ) from e
+            elif lower.endswith((".yaml", ".yml")):
+                try:
+                    import yaml as _yaml  # type: ignore[import-untyped]
+                except ImportError:
+                    return
+                try:
+                    _yaml.safe_load(content)
+                except _yaml.YAMLError as e:
+                    raise WorkspaceError(
+                        f"yaml parse error in {path}: {e}"
+                    ) from e
+            elif lower.endswith(".toml"):
+                try:
+                    import tomllib as _toml  # py311+
+                except ImportError:
+                    return
+                try:
+                    _toml.loads(content)
+                except _toml.TOMLDecodeError as e:
+                    raise WorkspaceError(
+                        f"toml parse error in {path}: {e}"
+                    ) from e
+        except WorkspaceError:
+            raise
+        except Exception:
+            # Never let validation crash apply_ops on something exotic
+            # (e.g. content with unusual encoding) — fail open for
+            # unrecognised cases.
+            return
+
     def apply_ops(self, ops: list[FileOp | dict]) -> list[OpResult]:
         results: list[OpResult] = []
         for raw in ops:
             op = raw if isinstance(raw, FileOp) else FileOp.model_validate(raw)
             try:
+                # Refuse generated/compiled artifacts up-front — writing to
+                # them looks like progress to the implementer but the source
+                # file stays untouched and the next iteration loops forever.
+                if op.path and self._GENERATED_PATH_RX.search(op.path):
+                    raise WorkspaceError(
+                        f"refusing op on generated artifact path: {op.path!r}. "
+                        f"Edit the SOURCE file instead (e.g. drop the .pyc / "
+                        f"__pycache__ prefix)."
+                    )
                 if op.op == "write":
                     if op.content is None:
                         raise WorkspaceError("write requires `content`")
+                    self._validate_content(op.path, op.content)
                     p = self._safe_path(op.path)
                     p.parent.mkdir(parents=True, exist_ok=True)
                     p.write_text(op.content, encoding="utf-8")
@@ -132,6 +377,7 @@ class Workspace:
                         # Fallback: full overwrite via `content`.
                         if op.content is None:
                             raise WorkspaceError("edit requires either find+replace or content")
+                        self._validate_content(op.path, op.content)
                         p.write_text(op.content, encoding="utf-8")
                         results.append(OpResult("edit", op.path, True, "overwrite"))
                     else:
@@ -143,7 +389,9 @@ class Workspace:
                             raise WorkspaceError(
                                 f"find string is not unique in {op.path} ({count} matches)"
                             )
-                        p.write_text(text.replace(op.find, op.replace, 1), encoding="utf-8")
+                        new_text = text.replace(op.find, op.replace, 1)
+                        self._validate_content(op.path, new_text)
+                        p.write_text(new_text, encoding="utf-8")
                         results.append(OpResult("edit", op.path, True, "1 replacement"))
 
                 elif op.op == "delete":
@@ -177,24 +425,52 @@ class Workspace:
         self._git(["add", "-A"])
 
     def diff(self, max_bytes: int = 200_000) -> str:
-        """Return diff describing Cascade's changes only.
+        """Return diff describing Cascade's most recent iteration's work.
 
-        - Detached (Workspace.create): stage everything, diff vs. last `iter` commit.
-        - Attached (Workspace.attach): diff working-tree vs. base_ref recorded at
-          attach time. This isolates Cascade's edits from any uncommitted user
-          changes that were already in the tree.
+        - Detached: stage everything → diff vs. last `iter` commit (i.e. only
+          the new changes since the previous commit_iteration).
+        - Attached: diff working-tree vs. base_ref recorded at attach time.
+
+        Each per-iter Reviewer call uses this to focus on the latest delta.
+        For the cross-subtask Integration Review use `diff_cumulative()`.
         """
         if self.is_attached and self.base_ref:
-            # Stage everything so untracked Cascade-created files appear in the
-            # diff. Yes this also stages any pre-existing user edits — we accept
-            # that trade-off; without staging, brand-new files are invisible to
-            # the reviewer. The reviewer prompt is told to focus on plan-relevant
-            # changes only.
             self.stage_all()
             out = self._git(["diff", "--cached", self.base_ref]).stdout
         else:
             self.stage_all()
             out = self._git(["diff", "--cached"]).stdout
+        if len(out) > max_bytes:
+            out = out[:max_bytes] + f"\n…(truncated, {len(out) - max_bytes} more bytes)"
+        return out
+
+    def diff_cumulative(self, max_bytes: int = 200_000) -> str:
+        """Cumulative diff since the run started.
+
+        - Detached: from the initial empty commit through every committed
+          iter-commit + any uncommitted staged work.
+        - Attached: from `base_ref` to current.
+
+        Used by the supervisor's final Integration-Review so it sees every
+        file the run produced, not just the last sub-task's delta. (Pre-fix
+        the per-iter diff() was empty after commit_iteration → integration
+        reviewer hallucinated `empty diff` and rejected fully working runs.)
+        """
+        # Pick comparison base.
+        base = self.base_ref if (self.is_attached and self.base_ref) else None
+        if base is None:
+            r = self._git(["rev-list", "--max-parents=0", "HEAD"])
+            if r.returncode == 0 and r.stdout.strip():
+                base = r.stdout.strip().splitlines()[0]
+        self.stage_all()
+        out = ""
+        if base:
+            r = self._git(["diff", base])
+            if r.returncode == 0:
+                out = r.stdout
+        if not out:
+            r = self._git(["diff", "--cached"])
+            out = r.stdout if r.returncode == 0 else ""
         if len(out) > max_bytes:
             out = out[:max_bytes] + f"\n…(truncated, {len(out) - max_bytes} more bytes)"
         return out

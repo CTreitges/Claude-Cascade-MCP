@@ -89,16 +89,25 @@ async def send_long(message: Message, text: str, *, code: bool = False, chunk: i
 
 
 def format_progress_line(event: str, payload: dict, lang: str = "de") -> str | None:
+    # Sub-task prefix for decomposed runs: makes the live status message
+    # show "🪓 'core-modules' · iter 1: implementing" instead of just
+    # "iter 1: implementing", so users can track which slice is in flight.
+    sub = payload.get("subtask")
+    sub_prefix = f"🪓 `{sub}` · " if sub else ""
+
     if event == "started":
         return ""
     if event == "planning":
         return t("progress.planning", lang=lang)
     if event == "planned":
         return t("progress.planned", lang=lang, summary=(payload.get("summary") or "")[:120])
+    if event == "log":
+        msg = payload.get("msg", "")
+        return f"  ▸ {msg}" if msg else None
     if event == "implementing":
-        return t("progress.implementing", lang=lang, n=payload.get("iteration"))
+        return sub_prefix + t("progress.implementing", lang=lang, n=payload.get("iteration"))
     if event == "implemented":
-        return t(
+        return sub_prefix + t(
             "progress.implemented",
             lang=lang,
             n=payload.get("iteration"),
@@ -106,12 +115,12 @@ def format_progress_line(event: str, payload: dict, lang: str = "de") -> str | N
             failed=payload.get("failed", 0),
         )
     if event == "reviewing":
-        return t("progress.reviewing", lang=lang, n=payload.get("iteration"))
+        return sub_prefix + t("progress.reviewing", lang=lang, n=payload.get("iteration"))
     if event == "reviewed":
         fb = (payload.get("feedback") or "").strip().splitlines()[0:1]
         suffix = f": {fb[0][:120]}" if fb else ""
         key = "progress.reviewed_pass" if payload.get("pass") else "progress.reviewed_fail"
-        return t(key, lang=lang, n=payload.get("iteration"), suffix=suffix)
+        return sub_prefix + t(key, lang=lang, n=payload.get("iteration"), suffix=suffix)
     if event in ("iteration_failed", "done"):
         return ""
     if event == "failed":

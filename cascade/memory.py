@@ -141,38 +141,158 @@ async def cleanup_old_entries(*, retention_days: int = 90) -> int:
     return await asyncio.to_thread(_do)
 
 
+# Minimal stopword list (DE + EN). Kept small on purpose — the BM25 IDF
+# already discounts common terms, but trimming the obvious ones first
+# keeps the tokenized query focused and avoids matching "for"/"the"/etc.
+_STOPWORDS: frozenset[str] = frozenset({
+    # English
+    "the", "and", "for", "with", "from", "this", "that", "have", "has",
+    "are", "was", "were", "you", "your", "our", "out", "into", "but",
+    "not", "all", "any", "can", "will", "would", "could", "should", "may",
+    "might", "what", "which", "who", "how", "why", "when", "where",
+    "there", "here", "than", "then", "them", "they", "their", "ours",
+    # German
+    "und", "oder", "aber", "der", "die", "das", "den", "dem", "des",
+    "ein", "eine", "einen", "einem", "einer", "ist", "war", "sind", "waren",
+    "ich", "du", "er", "sie", "es", "wir", "ihr", "mit", "von", "zu",
+    "bei", "auf", "für", "über", "unter", "nach", "vor", "ohne", "gegen",
+    "wie", "wann", "warum", "wo", "was", "wer", "ja", "nein", "nicht",
+    "doch", "mal", "schon", "noch", "auch", "nur", "sehr", "dann",
+})
+
+
+def _tokenize(text: str, *, min_len: int = 3) -> list[str]:
+    """Lowercase, split on non-alnum, filter stopwords + min length.
+    Returns a list of tokens (preserving multiplicity for term-frequency)."""
+    if not text:
+        return []
+    out: list[str] = []
+    cur: list[str] = []
+    for ch in text.lower():
+        if ch.isalnum():
+            cur.append(ch)
+        else:
+            if cur:
+                tok = "".join(cur)
+                cur = []
+                if len(tok) >= min_len and tok not in _STOPWORDS:
+                    out.append(tok)
+    if cur:
+        tok = "".join(cur)
+        if len(tok) >= min_len and tok not in _STOPWORDS:
+            out.append(tok)
+    return out
+
+
+_IMPORTANCE_BOOST = {
+    "critical": 1.30,
+    "high":     1.15,
+    "medium":   1.00,
+    "low":      0.85,
+}
+
+
+def _bm25_score(
+    query_terms: list[str],
+    doc_terms: list[str],
+    df: dict[str, int],
+    n_docs: int,
+    avgdl: float,
+    *,
+    k1: float = 1.5,
+    b: float = 0.75,
+) -> float:
+    """Vanilla BM25 score for one (query, doc). df = document-frequency map
+    over the whole collection. Returns 0.0 if no query term hits."""
+    if not query_terms or not doc_terms:
+        return 0.0
+    dl = len(doc_terms)
+    # Term-frequency map for this doc
+    tf: dict[str, int] = {}
+    for t in doc_terms:
+        tf[t] = tf.get(t, 0) + 1
+    score = 0.0
+    import math
+    for q in set(query_terms):
+        f = tf.get(q, 0)
+        if f == 0:
+            continue
+        n_q = df.get(q, 0)
+        idf = math.log(1.0 + (n_docs - n_q + 0.5) / (n_q + 0.5))
+        norm = f * (k1 + 1.0) / (f + k1 * (1.0 - b + b * (dl / max(avgdl, 1.0))))
+        score += idf * norm
+    return score
+
+
 async def recall_context(task: str, *, limit: int = 3) -> str | None:
-    """Look up recent memory entries whose tags or content overlap with the
-    task. Returns a short bullet-list of recalls, or None if nothing useful.
+    """BM25-ranked recall over the local memory.jsonl. Searches across both
+    `content` and `file_content`-like fields plus tags. Importance metadata
+    nudges the ranking (`high`/`critical` rank slightly higher).
+
+    Returns a bullet-list of the top `limit` matches, or None if nothing
+    scores above zero.
     """
     path = _memory_path()
     if not path.exists():
         return None
 
-    def _scan() -> list[dict]:
-        keywords = {w.lower() for w in task.split() if len(w) > 4}
-        out: list[dict] = []
+    def _scan_and_rank() -> list[tuple[float, dict]]:
+        q_terms = _tokenize(task)
+        if not q_terms:
+            return []
+
+        # First pass — load entries + tokenize. This is bounded by the
+        # JSONL size; we cap at the latest 5000 entries to keep recall
+        # snappy even when the file has grown over months of use.
+        entries: list[dict] = []
         try:
             with path.open("r", encoding="utf-8") as f:
                 for line in f:
                     try:
-                        e = json.loads(line)
+                        entries.append(json.loads(line))
                     except Exception:
                         continue
-                    haystack = (e.get("content", "") + " " + e.get("tags", "")).lower()
-                    if any(k in haystack for k in keywords):
-                        out.append(e)
         except Exception:
             return []
-        return out[-limit:]
+        if len(entries) > 5000:
+            entries = entries[-5000:]
+        if not entries:
+            return []
 
-    matches = await asyncio.to_thread(_scan)
-    if not matches:
+        # Build per-doc token lists + document-frequency map
+        docs: list[list[str]] = []
+        df: dict[str, int] = {}
+        for e in entries:
+            haystack = " ".join(
+                str(e.get(k, ""))
+                for k in ("content", "tags", "category")
+            )
+            tokens = _tokenize(haystack)
+            docs.append(tokens)
+            for t in set(tokens):
+                df[t] = df.get(t, 0) + 1
+        n_docs = len(docs)
+        avgdl = sum(len(d) for d in docs) / max(n_docs, 1)
+
+        # Score every doc; keep only those with score>0
+        scored: list[tuple[float, dict]] = []
+        for e, dt in zip(entries, docs):
+            s = _bm25_score(q_terms, dt, df, n_docs, avgdl)
+            if s <= 0.0:
+                continue
+            boost = _IMPORTANCE_BOOST.get(e.get("importance", "medium"), 1.0)
+            scored.append((s * boost, e))
+
+        scored.sort(key=lambda p: p[0], reverse=True)
+        return scored[:limit]
+
+    ranked = await asyncio.to_thread(_scan_and_rank)
+    if not ranked:
         return None
     lines = []
-    for e in matches:
+    for score, e in ranked:
         cat = e.get("category", "?")
         imp = e.get("importance", "?")
-        content = (e.get("content") or "")[:200]
-        lines.append(f"  [{cat}/{imp}] {content}")
+        content = (e.get("content") or "")[:240]
+        lines.append(f"  [{cat}/{imp} score={score:.2f}] {content}")
     return "\n".join(lines)

@@ -143,25 +143,46 @@ async def test_owner_only_returns_true_for_owner(monkeypatch):
 
 
 def test_models_main_view_lists_workers():
-    text, kb = bot._models_main_view("de", "opus", "qwen", "sonnet")
-    assert "Planner" in text and "Implementer" in text and "Reviewer" in text
-    assert "opus" in text and "qwen" in text and "sonnet" in text
-    # Inline keyboard must include callback_data starting with m:w: for all 3 workers
+    text, kb = bot._models_main_view("de", "opus", "qwen", "sonnet", "haiku")
+    assert "Planner" in text and "Implementer" in text and "Reviewer" in text and "Chat" in text
+    assert "opus" in text and "qwen" in text and "sonnet" in text and "haiku" in text
+    # Inline keyboard must include callback_data starting with m:w: for all 4 workers
     callback_datas = [b.callback_data for row in kb.inline_keyboard for b in row]
     assert "m:w:planner" in callback_datas
     assert "m:w:implementer" in callback_datas
     assert "m:w:reviewer" in callback_datas
+    assert "m:w:chat" in callback_datas
     assert "m:close" in callback_datas
 
 
-def test_effort_main_view_lists_three_workers():
-    text, kb = bot._effort_main_view("en", "high", "default", "low")
-    assert "Planner" in text and "Reviewer" in text and "Triage" in text
+def test_effort_main_view_lists_four_workers():
+    # New signature: (lang, session_dict, settings_obj). The view dynamically
+    # picks effort vs temperature per worker based on the chosen model.
+    from cascade.config import Settings
+    s = Settings()
+    sess = {
+        "planner_model": "claude-opus-4-7",       # → effort
+        "implementer_model": "qwen3-coder:480b",  # → temperature
+        "reviewer_model": "claude-sonnet-4-6",    # → effort
+        "chat_model": "glm-5.1",                  # → temperature
+        "planner_effort": "high",
+        "reviewer_effort": "low",
+        "implementer_temperature": 0.2,
+        "chat_temperature": 0.7,
+    }
+    text, kb = bot._effort_main_view("en", sess, s)
+    assert "Planner" in text
+    assert "Implementer" in text
+    assert "Reviewer" in text
+    assert "Chat" in text
+    # Claude workers show effort, Ollama workers show temperature
+    assert "effort `high`" in text
+    assert "effort `low`" in text
+    assert "temperature `0.20`" in text
+    assert "temperature `0.70`" in text
     callback_datas = [b.callback_data for row in kb.inline_keyboard for b in row]
-    assert "e:w:planner" in callback_datas
-    assert "e:w:reviewer" in callback_datas
-    assert "e:w:triage" in callback_datas
-    assert "e:close" in callback_datas
+    for cb in ("e:w:planner", "e:w:implementer", "e:w:reviewer", "e:w:triage", "e:close"):
+        assert cb in callback_datas
 
 
 # ---------- _build_replan_feedback (lives in core.py) ----------

@@ -38,7 +38,34 @@ async def test_set_chat_effort_clears(store: Store) -> None:
 
 async def test_set_chat_effort_rejects_unknown_worker(store: Store) -> None:
     with pytest.raises(ValueError):
-        await store.set_chat_effort(1, "implementer", "high")
+        await store.set_chat_effort(1, "bogus", "high")
+
+
+async def test_set_chat_effort_implementer(store: Store) -> None:
+    await store.set_chat_effort(1, "implementer", "high")
+    sess = await store.get_chat_session(1)
+    assert sess and sess["implementer_effort"] == "high"
+
+
+async def test_set_chat_temperature_persists(store: Store) -> None:
+    await store.set_chat_temperature(1, "implementer", 0.7)
+    await store.set_chat_temperature(1, "chat", 0.0)
+    sess = await store.get_chat_session(1)
+    assert sess
+    assert sess["implementer_temperature"] == 0.7
+    assert sess["chat_temperature"] == 0.0
+
+
+async def test_set_chat_temperature_clear(store: Store) -> None:
+    await store.set_chat_temperature(1, "planner", 0.5)
+    await store.set_chat_temperature(1, "planner", None)
+    sess = await store.get_chat_session(1)
+    assert sess and sess["planner_temperature"] is None
+
+
+async def test_set_chat_temperature_rejects_unknown(store: Store) -> None:
+    with pytest.raises(ValueError):
+        await store.set_chat_temperature(1, "bogus", 0.5)
 
 
 async def test_set_chat_replan_max(store: Store) -> None:
@@ -113,16 +140,11 @@ async def test_planner_call_uses_settings_effort(monkeypatch):
 
     captured = {}
 
-    async def fake_claude_call(**kw):
+    async def fake_agent_chat(**kw):
         captured.update(kw)
-        # Return a minimal valid plan
-        from cascade.claude_cli import ClaudeResult
-        return ClaudeResult(
-            text='{"summary":"x","steps":[],"files_to_touch":[],"acceptance_criteria":[]}',
-            raw=None, duration_s=0.1
-        )
+        return '{"summary":"x","steps":[],"files_to_touch":[],"acceptance_criteria":[]}'
 
-    monkeypatch.setattr(pmod, "claude_call", fake_claude_call)
+    monkeypatch.setattr(pmod, "agent_chat", fake_agent_chat)
 
     s = Settings(cascade_planner_effort="xhigh")
     p = await pmod.call_planner("do thing", s=s)
@@ -136,12 +158,11 @@ async def test_reviewer_call_uses_settings_effort(monkeypatch):
 
     captured = {}
 
-    async def fake_claude_call(**kw):
+    async def fake_agent_chat(**kw):
         captured.update(kw)
-        from cascade.claude_cli import ClaudeResult
-        return ClaudeResult(text='{"pass": true, "feedback": ""}', raw=None, duration_s=0.1)
+        return '{"pass": true, "feedback": ""}'
 
-    monkeypatch.setattr(rmod, "claude_call", fake_claude_call)
+    monkeypatch.setattr(rmod, "agent_chat", fake_agent_chat)
 
     s = Settings(cascade_reviewer_effort="low")
     plan = Plan(summary="x", steps=[], files_to_touch=[], acceptance_criteria=[])

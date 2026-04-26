@@ -134,7 +134,26 @@ async def cmd_resume(update: Update, ctx) -> None:
             t("task_not_found", lang=lang, task_id=args[0]), parse_mode=ParseMode.MARKDOWN
         )
         return
-    await run_task_for_chat(update, ctx, task.task_text, resume_task_id=task.id)
+    # Extra text after the task id is treated as an additional hint that
+    # gets prepended to the original task_text — this nudges the resumed
+    # planner / implementer in a new direction without losing workspace state.
+    extra = " ".join(args[1:]).strip()
+    if extra:
+        hint_label = (
+            "ZUSÄTZLICHER HINWEIS FÜR DIESEN RESUME-LAUF"
+            if lang == "de"
+            else "ADDITIONAL HINT FOR THIS RESUME RUN"
+        )
+        task_text = f"{task.task_text}\n\n--- {hint_label} ---\n{extra}"
+        await update.effective_message.reply_text(
+            f"🔁 Resume `{task.id}` mit Hinweis: _{extra[:200]}_"
+            if lang == "de"
+            else f"🔁 Resuming `{task.id}` with hint: _{extra[:200]}_",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    else:
+        task_text = task.task_text
+    await run_task_for_chat(update, ctx, task_text, resume_task_id=task.id)
 
 
 async def cmd_again(update: Update, ctx) -> None:
@@ -195,6 +214,77 @@ async def cmd_queue(update: Update, ctx) -> None:
     for cid, (tid, _task, _ev) in INFLIGHT.items():
         lines.append(f"• `{tid}` (chat `{cid}`)")
     await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_wait(update: Update, ctx) -> None:
+    """Show which running tasks are currently waiting on a rate-limit
+    / session window, plus the estimated next-availability per task.
+
+    Reads the most recent `waiting_for_session` event from each in-flight
+    task's log table — that's where `with_retry` (via the WAIT_NOTIFIER
+    contextvar) emits its "sleeping for N seconds" pings.
+    """
+    if not await owner_only(update, ctx):
+        return
+    lang = lang_for(update)
+    store: Store = ctx.application.bot_data["store"]
+    if not INFLIGHT:
+        await update.effective_message.reply_text(
+            "Nichts läuft — also nichts wartet."
+            if lang == "de"
+            else "Nothing in flight — nothing is waiting.",
+        )
+        return
+    import re
+    import time as _t
+    lines = [
+        "*Aktive Wait-Status:*" if lang == "de" else "*Active wait status:*",
+    ]
+    any_waiting = False
+    for cid, (tid, _task, _ev) in INFLIGHT.items():
+        try:
+            entries = await store.tail_logs(tid, n=120)
+        except Exception:
+            entries = []
+        # Look backwards for the most recent "waiting_for_session" line.
+        last = None
+        for e in reversed(entries):
+            if "waiting_for_session" in (e.message or ""):
+                last = e
+                break
+        if last is None:
+            lines.append(
+                f"  ▶️ `{tid}` (chat `{cid}`) — {'arbeitet' if lang == 'de' else 'working'}"
+            )
+            continue
+        any_waiting = True
+        m = re.search(r'"seconds"\s*:\s*(\d+)', last.message or "")
+        secs = int(m.group(1)) if m else 0
+        elapsed = max(0, int(_t.time() - last.ts))
+        remaining = max(0, secs - elapsed)
+        if remaining >= 86400:
+            when = f"~{remaining // 86400}T {(remaining % 86400) // 3600}h"
+        elif remaining >= 3600:
+            when = f"~{remaining // 3600}h {(remaining % 3600) // 60}min"
+        elif remaining >= 60:
+            when = f"~{remaining // 60}min {remaining % 60}s"
+        else:
+            when = f"{remaining}s"
+        reason_match = re.search(r'"reason"\s*:\s*"([^"]+)"', last.message or "")
+        reason = reason_match.group(1) if reason_match else "?"
+        lines.append(
+            f"  ⏳ `{tid}` (chat `{cid}`) — {when} ({reason[:80]})"
+        )
+    if not any_waiting:
+        # Replace the header for readability.
+        lines[0] = (
+            "Alle laufenden Tasks arbeiten — niemand wartet."
+            if lang == "de"
+            else "All running tasks are working — none waiting."
+        )
+    await update.effective_message.reply_text(
+        "\n".join(lines), parse_mode=ParseMode.MARKDOWN,
+    )
 
 
 async def cmd_abort(update: Update, ctx) -> None:

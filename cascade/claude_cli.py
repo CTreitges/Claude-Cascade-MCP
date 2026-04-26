@@ -98,7 +98,15 @@ async def claude_call(
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
-            raise ClaudeCliError(f"claude -p timed out after {timeout_s}s")
+            from .rate_limit import RateLimitError
+            # Treat timeouts as transient — `with_retry` then waits and tries
+            # again instead of falling through to a heuristic. The Drive-Setup
+            # log on 2026-04-26 hit this: triage timed out at 60s, fell back
+            # to heuristic, lost user intent.
+            raise RateLimitError(
+                f"claude -p timed out after {timeout_s}s (transient)",
+                retry_after=None,
+            )
     except FileNotFoundError as e:
         raise ClaudeCliError(f"`claude` CLI not found: {e}") from e
     except OSError as e:
@@ -111,6 +119,16 @@ async def claude_call(
     stderr = stderr_b.decode("utf-8", errors="replace")
 
     if proc.returncode != 0:
+        from .rate_limit import RateLimitError, is_rate_limit, parse_retry_after
+        combined = (stderr + "\n" + stdout).strip()
+        # SIGTERM (143) / SIGKILL (137) → process killed externally (bot
+        # restart, OOM). Treat as transient so with_retry waits + retries.
+        if proc.returncode in (137, 143) or is_rate_limit(combined):
+            raise RateLimitError(
+                f"claude -p exited {proc.returncode} (transient): "
+                f"{combined[:400] or 'killed externally'}",
+                retry_after=parse_retry_after(combined),
+            )
         raise ClaudeCliError(
             f"claude -p exited {proc.returncode}: {stderr.strip() or stdout.strip()}\n"
             f"args: {shlex.join(args)}"
@@ -123,6 +141,23 @@ async def claude_call(
         envelope = json.loads(stdout)
     except json.JSONDecodeError as e:
         raise ClaudeCliError(f"claude -p produced invalid JSON: {e}\n--- stdout ---\n{stdout}") from e
+
+    # claude -p sometimes exits 0 with `is_error: true` plus an api_error_status
+    # like 429 / 529 in the JSON envelope — treat those as rate-limits too.
+    if envelope.get("is_error"):
+        from .rate_limit import RateLimitError, is_rate_limit, parse_retry_after
+        api_status = envelope.get("api_error_status")
+        result_text = envelope.get("result") or ""
+        signal = f"{api_status} {result_text}".strip()
+        if api_status in (429, 529, 503) or is_rate_limit(signal):
+            raise RateLimitError(
+                f"claude -p api error {api_status}: {result_text[:300]}",
+                retry_after=parse_retry_after(result_text),
+            )
+        # Non-rate-limit error → bubble up as ClaudeCliError so caller knows.
+        raise ClaudeCliError(
+            f"claude -p envelope error (status={api_status}): {result_text[:400]}"
+        )
 
     text = (
         envelope.get("result")

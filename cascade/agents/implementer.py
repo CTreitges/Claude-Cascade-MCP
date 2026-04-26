@@ -27,7 +27,23 @@ NEVER use markdown fences, NEVER assume a file exists unless it appears in the
 workspace listing.
 
 For "edit" ops, prefer find/replace with a unique 'find' string. If you must
-overwrite a file, use op="write" with the full new content.""".strip()
+overwrite a file, use op="write" with the full new content.
+
+CRITICAL — DO NOT WRITE TO GENERATED ARTIFACTS. Files like `*.pyc`, `*.pyo`,
+`__pycache__/...`, `.so`, `node_modules/...`, `dist/`, `build/`, `.next/`,
+`.venv/`, `venv/` are produced by the toolchain. Editing them does NOTHING
+to the source — the runner will reject those ops and the reviewer will keep
+saying "source not modified". ALWAYS target the source file
+(e.g. `telegram/handler.py`, never `telegram/__pycache__/handler.cpython-312.pyc`).
+
+CRITICAL — STRING ESCAPING IN FILE CONTENT. The `content` field is a JSON
+string, but its VALUE is the literal file content. To write a regex like
+`re.match(r'^https?://(www\.|m\.)?…')` into a Python file, the JSON value
+must contain a SINGLE backslash before the dot, not double. In JSON that's
+written `"\\."`  — but the resulting file content is `\.` (one backslash).
+NEVER write `"\\\\."` (which puts `\\.` into the file — a regex bug). When
+in doubt, use op="write" with the full file body and verify mentally that
+each `\` you intend would need a single `\\` in JSON, not `\\\\`.""".strip()
 
 
 SCHEMA_HINT = """{
@@ -47,6 +63,7 @@ def _build_user_message(
     feedback: str | None,
     iteration: int,
     file_contents: dict[str, str] | None = None,
+    external_context: str | None = None,
 ) -> str:
     parts = [
         f"ITERATION: {iteration}",
@@ -57,6 +74,8 @@ def _build_user_message(
         "\nCURRENT WORKSPACE FILES:\n"
         + ("\n".join(f"- {f}" for f in workspace_files) if workspace_files else "(empty)"),
     ]
+    if external_context:
+        parts.append(f"\n{external_context}")
     if file_contents:
         parts.append(
             "\nEXISTING FILE CONTENTS (read-only context — these files already exist "
@@ -78,6 +97,9 @@ async def call_implementer(
     iteration: int = 1,
     model: str | None = None,
     provider: str | None = None,
+    effort: str | None = None,
+    temperature: float | None = None,
+    external_context: str | None = None,
     s: Settings | None = None,
     file_contents: dict[str, str] | None = None,
 ) -> ImplementerOutput:
@@ -88,6 +110,7 @@ async def call_implementer(
         feedback=feedback,
         iteration=iteration,
         file_contents=file_contents,
+        external_context=external_context,
     )
     reply = await implementer_chat(
         system=IMPLEMENTER_SYSTEM,
@@ -95,16 +118,47 @@ async def call_implementer(
         json_schema_hint=SCHEMA_HINT,
         model=model,
         provider=provider,
+        effort=effort or s.cascade_implementer_effort or None,
+        temperature=temperature,
         s=s,
     )
-    return _coerce(reply.text)
+    try:
+        return _coerce(reply.text)
+    except LLMClientError as e:
+        # JSON repair pass: ask the same model to fix its own broken output.
+        # Saves a full iteration when the only issue is e.g. a missing comma.
+        repair_prompt = (
+            "Your previous response was not valid JSON or did not match the "
+            "required schema. Reply with ONLY the corrected JSON object, no "
+            "prose, no markdown fences. Original error:\n"
+            f"{str(e)[:600]}\n\n"
+            "Original response (broken):\n"
+            f"{reply.text[:6000]}"
+        )
+        repaired = await implementer_chat(
+            system="You repair broken JSON outputs from a coding agent. "
+                   "Return ONLY a valid JSON object matching the requested schema.",
+            user=repair_prompt,
+            json_schema_hint=SCHEMA_HINT,
+            model=model,
+            provider=provider,
+            effort=effort or s.cascade_implementer_effort or None,
+            temperature=0.0,  # deterministic for repair
+            s=s,
+        )
+        return _coerce(repaired.text)
 
 
 def _coerce(raw: str) -> ImplementerOutput:
     try:
         data: Any = json.loads(raw)
     except json.JSONDecodeError:
-        data = parse_json_payload(raw)
+        try:
+            data = parse_json_payload(raw)
+        except Exception as e:
+            raise LLMClientError(
+                f"Implementer output is not valid JSON: {e}\nraw={raw[:500]!r}"
+            ) from e
     # Some providers return a bare list of ops.
     if isinstance(data, list):
         data = {"ops": data}
