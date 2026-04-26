@@ -10,6 +10,12 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
+# Opt into Node.js 24 for the JS-based actions (checkout, setup-python).
+# Node 20 will be removed from runners on 2026-09-16; setting this avoids
+# the deprecation banner now and forces our chosen actions onto Node 24.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   test:
     runs-on: ubuntu-latest

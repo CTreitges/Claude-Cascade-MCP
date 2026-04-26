@@ -19,7 +19,7 @@ class ImplementerOutput(BaseModel):
     rationale: str | None = None
 
 
-IMPLEMENTER_SYSTEM = """You are the Implementer in a three-agent loop
+IMPLEMENTER_SYSTEM = r"""You are the Implementer in a three-agent loop
 (Planner → YOU → Reviewer). You receive a Plan (and possibly Reviewer feedback
 from a failed prior iteration). You produce a JSON object describing the file
 operations to apply to the workspace. NEVER include prose outside the JSON,

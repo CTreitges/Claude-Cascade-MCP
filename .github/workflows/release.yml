@@ -1,12 +1,12 @@
 name: Release
 
-# Triggered by pushing a version tag (e.g. `git push origin v0.3.0`).
-# Creates a GitHub Release using the matching `## [<version>]` section
-# from CHANGELOG.md as the body, with the built sdist + wheel attached.
+# Triggered by pushing a `v*` tag, or manually via "Run workflow" with a
+# tag input (useful when the tag was pushed before this workflow file
+# existed — e.g. v0.2.0 — and the release needs to be created
+# retroactively).
 #
-# `workflow_dispatch` is the manual fallback — useful when a tag was
-# pushed before this file existed (then nothing fired automatically),
-# or when re-cutting a release after a CHANGELOG fix.
+# Builds sdist + wheel, then creates a GitHub Release whose body is the
+# matching `## [<version>]` section pulled out of CHANGELOG.md.
 
 on:
   push:
@@ -19,31 +19,50 @@ on:
         required: true
         default: ""
 
+# Workflow-level permissions — branch-protection rules that would
+# block job-level permissions still respect this scope.
 permissions:
-  contents: write   # required by softprops/action-gh-release
+  contents: write
+
+# Force JS-based actions to Node 24 (Node 20 deprecation warning).
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   release:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
+      # 1. Resolve the tag → both `ref` (`v0.2.0`) and `version` (`0.2.0`).
       - name: Resolve tag
         id: tag
         shell: bash
         run: |
+          set -euo pipefail
           if [ -n "${{ github.event.inputs.tag }}" ]; then
             ref="${{ github.event.inputs.tag }}"
           else
             ref="${GITHUB_REF#refs/tags/}"
           fi
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "version=${ref#v}" >> "$GITHUB_OUTPUT"
+          if [[ ! "$ref" =~ ^v[0-9] ]]; then
+            echo "::error::Resolved tag '$ref' doesn't look like vX.Y.Z"
+            exit 1
+          fi
+          {
+            echo "ref=$ref"
+            echo "version=${ref#v}"
+          } >> "$GITHUB_OUTPUT"
           echo "Resolved tag=$ref version=${ref#v}"
 
-      - uses: actions/checkout@v4
+      # 2. Check out the *tag* (not the default branch). Need full
+      # history so future improvements (e.g. auto-generating release
+      # notes from `git log`) work.
+      - name: Checkout the tag
+        uses: actions/checkout@v4
         with:
           ref: ${{ steps.tag.outputs.ref }}
           fetch-depth: 0
+          fetch-tags: true
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -51,26 +70,31 @@ jobs:
           python-version: "3.12"
 
       - name: Build sdist + wheel
+        shell: bash
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip build
           python -m build
           ls -la dist/
 
+      # 3. Pull the matching `## [<version>]` block out of CHANGELOG.md
+      # using a self-contained Python step (avoids fragile heredoc
+      # quoting). Always produces release_notes.md, never fails.
       - name: Extract release notes from CHANGELOG.md
+        shell: bash
         env:
           VERSION: ${{ steps.tag.outputs.version }}
         run: |
-          python <<'PY'
+          set -euo pipefail
+          python - <<'PY'
           import os, re, pathlib
           version = os.environ["VERSION"]
           src = pathlib.Path("CHANGELOG.md")
           out = pathlib.Path("release_notes.md")
-          fallback = (
-              f"Release {version} — see CHANGELOG.md for the full history.\n"
-          )
+          fallback = f"Release {version} — see CHANGELOG.md for details.\n"
           if not src.is_file():
               out.write_text(fallback, encoding="utf-8")
-              print("CHANGELOG.md missing, using fallback")
+              print(f"::warning::CHANGELOG.md missing, using fallback")
               raise SystemExit(0)
           text = src.read_text(encoding="utf-8")
           pattern = re.compile(
@@ -84,14 +108,18 @@ jobs:
               print(f"Wrote {len(body)} chars to release_notes.md")
           else:
               out.write_text(fallback, encoding="utf-8")
-              print(f"No '## [{version}]' section in CHANGELOG.md, using fallback")
+              print(f"::warning::No '## [{version}]' section found, using fallback")
           PY
-          echo "--- release_notes.md head ---"
-          head -20 release_notes.md
+          echo "--- release_notes.md (head) ---"
+          head -30 release_notes.md
           echo "--- end ---"
 
+      # 4. Create / update the GitHub Release. Pinned by SHA to avoid
+      # silent breakage on a tag-rebase upstream.
       - name: Create / update GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v2.1.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ steps.tag.outputs.ref }}
           name: ${{ steps.tag.outputs.ref }}
