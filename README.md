@@ -166,10 +166,10 @@ keep using your own `.env` if you prefer manual config — `secrets.env`
 just overrides on top.
 
 The wizard does **not** ask for your Telegram user ID. Once the bot is
-running, the **first user who messages it becomes the owner** —
-`cascade.bot.helpers.owner_only` writes `TELEGRAM_OWNER_ID` to
-`secrets.env` and locks future updates to that account. So just send
-`/start` from your own account before anyone else does.
+running, the **first user who messages it becomes the owner** — the
+bot writes `TELEGRAM_OWNER_ID` to `secrets.env` automatically and
+locks future updates to that account. So just send `/start` from your
+own account before anyone else does.
 
 ### 3. (Optional) Install RLM-Claude for cross-session memory
 
@@ -228,10 +228,9 @@ journalctl --user -u cascade-bot -f
 ```
 
 The default service file points at `%h/cascade-bot-mcp/`. If you
-installed under `~/claude-cascade/` (the legacy default), edit the
-`WorkingDirectory` and `EnvironmentFile` lines accordingly — `cascade_home`
-will fall back to `~/claude-cascade` if it exists, so your existing
-install keeps working.
+cloned to a different path, edit `WorkingDirectory` and
+`EnvironmentFile` accordingly (or set `CASCADE_HOME=<your-path>` in
+`secrets.env`).
 
 ---
 
@@ -415,6 +414,40 @@ Notable knobs:
 - `CASCADE_AUTO_RESUME_INTERRUPTED` — resume orphan running tasks on
   bot startup (default off; the inline keyboard handles the per-task
   ask either way)
+
+---
+
+## Releasing a new version
+
+CI + release are wired through `.github/workflows/`:
+
+- `ci.yml` — runs on every push to `main`/`master`, every PR, and every
+  `v*` tag. Lints with ruff and runs `pytest -q`.
+- `release.yml` — triggers when a `v*` tag is pushed (or via "Run
+  workflow" with a tag input from the Actions tab). Builds an sdist +
+  wheel and creates a GitHub Release whose body is the matching
+  `## [<version>]` section pulled out of `CHANGELOG.md`.
+
+To cut a release:
+
+1. Update `CHANGELOG.md` with a new `## [X.Y.Z] — YYYY-MM-DD` section.
+2. Bump `version` in `pyproject.toml` and `npm/package.json`.
+3. Commit and push to `main`.
+4. Tag and push:
+   ```bash
+   git tag -a vX.Y.Z -m "vX.Y.Z"
+   git push origin vX.Y.Z
+   ```
+5. The `release.yml` workflow does the rest. If the tag was pushed
+   before the workflow existed (e.g. `v0.2.0`), use **Actions → Release
+   → Run workflow** with the tag name as input.
+
+For the npm wrapper (`npm/`), bump the same version, then:
+
+```bash
+cd npm
+npm publish --access public
+```
 
 ---
 
