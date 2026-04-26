@@ -300,14 +300,29 @@ the need for users to type the exact path.
 
 | Tool | Purpose |
 |------|---------|
-| `mcp__cascade__run_cascade_tool` | Run a Plan→Implement→Review cascade. `sync=True` blocks; `sync=False` returns a `task_id`. |
+| `mcp__cascade__run_cascade_tool` | Run a Plan→Implement→Review cascade. `sync=True` blocks; `sync=False` returns a `task_id` for polling. |
 | `mcp__cascade__cascade_status` | Status / iteration / summary of a task. |
-| `mcp__cascade__cascade_logs`   | Last N log lines for a task. |
-| `mcp__cascade__cascade_cancel` | Cancel a running task. |
+| `mcp__cascade__cascade_logs`   | Raw last N log lines for a task (debug-level). |
+| `mcp__cascade__cascade_progress` | **Telegram-identical milestone lines** for live polling. Cursor via `last_ts`; same formatter the bot uses. Used by `/cascade`. |
+| `mcp__cascade__cascade_summary` | One-shot post-run bundle: status + plan + changed_files + recent reviews + diff_excerpt. |
+| `mcp__cascade__cascade_cancel` | Cancel a running task (only those started in the same MCP process). |
 | `mcp__cascade__cascade_history`| Recent N tasks across interfaces. |
+| `mcp__cascade__cascade_resume` | Resume an interrupted task. |
+| `mcp__cascade__cascade_dryrun` | Plan-only call (no implementer / reviewer) — cheap planning preview. |
+| `mcp__cascade__cascade_skills_list` | List saved reusable skills. |
+| `mcp__cascade__cascade_skill_run`  | Run a saved skill with `{placeholder}` arguments. |
 
 There's also a `/cascade <task>` slash-command at
-`~/.claude/commands/cascade.md` that wraps the MCP tool.
+`~/.claude/commands/cascade.md` that wraps these tools — it dispatches
+async, polls `cascade_progress` every 15s, prints the same milestone
+lines you see in the Telegram bot, and finally calls `cascade_summary`
+so the rest of the chat session has full context for follow-ups (diff
+review, commit message, next steps).
+
+Flags supported by `/cascade`:
+`--repo /path`, `--implementer <model>`, `--planner <model>`,
+`--reviewer <model>`, `--effort <low|medium|high|xhigh|max>`,
+`--lang <de|en>`, `--sync` (skip polling, block until done).
 
 ### Telegram commands (highlights — `/help` for everything)
 
