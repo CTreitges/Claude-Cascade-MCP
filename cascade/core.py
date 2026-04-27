@@ -557,6 +557,14 @@ async def run_cascade(
                 await store.update_task(task_id, status="done",
                                         result_summary=summary, completed=True)
                 await _emit(progress, store, task_id, "done", {"summary": summary})
+                # P3.3: reflect on trivial-shortcut runs too — they're the
+                # cheapest, but lessons about plan-recognition still help
+                # future similar tasks.
+                await _try_reflect(
+                    task=task, plan=plan, iterations=1,
+                    final_diff=full_diff, task_id=task_id,
+                    store=store, s=s, lang=lang,
+                )
                 return CascadeResult(
                     task_id=task_id, status="done", iterations=1,
                     plan=plan, final_review=review, workspace_path=ws.root,
@@ -991,8 +999,14 @@ async def run_cascade(
                             sub_plan, await store.list_iterations(task_id)
                         )
                         try:
-                            new_top = await call_planner(
+                            # P3.1: route through the multi-plan voter
+                            # when enabled. Sub-task replans are exactly
+                            # the spot where two competing rewrites help —
+                            # one of them often dodges the broken-check
+                            # the other inherits.
+                            new_top = await _planner_or_multiplan(
                                 task,
+                                s=s,
                                 attachments=attachments,
                                 recall_context=recall,
                                 repo_candidates_block=repo_candidates_block,
@@ -1006,7 +1020,6 @@ async def run_cascade(
                                 external_context=external_context,
                                 temperature=planner_temperature,
                                 lang=lang,
-                                s=s,
                             )
                             # Prefer matching sub-task by name; else first
                             # sub-task; else use top-level fields.
@@ -1124,6 +1137,13 @@ async def run_cascade(
                         await store.update_task(task_id, status="done",
                                                 result_summary=summary, completed=True)
                         await _emit(progress, store, task_id, "done", {"summary": summary})
+                        # P3.3: post-run reflection for the decompose path
+                        # (was previously only in the no-decompose done-path).
+                        await _try_reflect(
+                            task=task, plan=plan, iterations=cumulative_iter,
+                            final_diff=full_diff, task_id=task_id,
+                            store=store, s=s, lang=lang,
+                        )
                         return CascadeResult(
                             task_id=task_id, status="done", iterations=cumulative_iter,
                             plan=plan, final_review=integration, workspace_path=ws.root,
@@ -1356,25 +1376,13 @@ async def run_cascade(
                     extra={"task_id": task_id, "review_severity": review.severity},
                 )
 
-                # Self-reflection: ask Sonnet what could have been better.
-                # Best-effort — never blocks the run on failure.
-                try:
-                    from .reflect import persist_lessons, reflect_on_run
-                    lessons = await reflect_on_run(
-                        task=task, plan=plan, iterations=iter_n,
-                        final_diff=ws.diff_cumulative(max_bytes=50_000),
-                        s=s, lang=lang,
-                    )
-                    if lessons:
-                        await persist_lessons(
-                            lessons, task_id=task_id, task_text=task,
-                        )
-                        await _log(
-                            store, task_id, "info",
-                            f"lessons-learned saved: {lessons[:200]}",
-                        )
-                except Exception as reflect_err:
-                    log.debug("reflect_on_run failed: %s", reflect_err)
+                # Self-reflection (now via shared helper used by all
+                # done- and failed-paths).
+                await _try_reflect(
+                    task=task, plan=plan, iterations=iter_n,
+                    final_diff=ws.diff_cumulative(max_bytes=50_000),
+                    task_id=task_id, store=store, s=s, lang=lang,
+                )
 
                 # Auto-skill suggestion (best-effort, non-blocking on failure).
                 if s.cascade_auto_skill_suggest:
@@ -1531,8 +1539,11 @@ async def run_cascade(
                 await _emit(progress, store, task_id, "replanning",
                             {"after_iteration": iter_n, "replans_done": replans_done})
                 try:
-                    new_plan = await call_planner(
+                    # P3.1: same multi-plan dispatch as the initial planner
+                    # call, so global replans benefit too.
+                    new_plan = await _planner_or_multiplan(
                         task,
+                        s=s,
                         attachments=attachments,
                         recall_context=recall,
                         repo_candidates_block=repo_candidates_block,
@@ -1540,7 +1551,6 @@ async def run_cascade(
                         external_context=external_context,
                         temperature=planner_temperature,
                         lang=lang,
-                        s=s,
                     )
                     plan = augment_quality_checks_for_python(new_plan)
                     feedback = None  # fresh slate; new plan replaces old feedback
@@ -1721,6 +1731,92 @@ async def _check_cancel(ev: asyncio.Event, store: Store, task_id: str) -> None:
         await store.update_task(task_id, status="cancelled", completed=True)
         await store.log(task_id, "warn", "cancelled by request")
         raise asyncio.CancelledError()
+
+
+async def _try_reflect(
+    *,
+    task: str,
+    plan: Plan | None,
+    iterations: int,
+    final_diff: str,
+    task_id: str,
+    store: Store,
+    s: Settings,
+    lang: str = "de",
+) -> None:
+    """Best-effort post-run self-reflection. Used by both done- and
+    failed-paths so we capture lessons-learned regardless of outcome.
+
+    Failures are arguably MORE valuable to reflect on — they're where
+    the planner / implementer / reviewer disagreement was sharpest.
+    Catches all exceptions so a flaky reflect-LLM never breaks the
+    main run's terminal status update.
+    """
+    if plan is None:
+        return
+    try:
+        from .reflect import persist_lessons, reflect_on_run
+        lessons = await reflect_on_run(
+            task=task, plan=plan, iterations=iterations,
+            final_diff=(final_diff or "")[:50_000],
+            s=s, lang=lang,
+        )
+        if lessons:
+            await persist_lessons(
+                lessons, task_id=task_id, task_text=task,
+            )
+            await _log(
+                store, task_id, "info",
+                f"lessons-learned saved: {lessons[:200]}",
+            )
+    except Exception as e:
+        log.debug("reflect_on_run failed: %s", e)
+
+
+async def _planner_or_multiplan(
+    task: str,
+    *,
+    s: Settings,
+    attachments=None,
+    recall_context=None,
+    repo_candidates_block=None,
+    replan_feedback: str | None = None,
+    external_context: str | None = None,
+    temperature: float | None = None,
+    lang: str = "en",
+) -> Plan:
+    """Single planner call → call_planner. Two-plan vote when
+    `cascade_multiplan_enabled` is set → call_planner_multi.
+
+    Used for both the initial plan and replans (sub-task and global).
+    Centralising the dispatch means sub-task replans pick up multi-plan
+    voting automatically, instead of always using the single-shot path.
+    """
+    if getattr(s, "cascade_multiplan_enabled", False):
+        from .multiplan import call_planner_multi
+        plan, _reason = await call_planner_multi(
+            task,
+            attachments=attachments,
+            recall_context=recall_context,
+            repo_candidates_block=repo_candidates_block,
+            replan_feedback=replan_feedback,
+            external_context=external_context,
+            base_temperature=temperature,
+            lang=lang,
+            s=s,
+        )
+        return plan
+    return await call_planner(
+        task,
+        attachments=attachments,
+        recall_context=recall_context,
+        repo_candidates_block=repo_candidates_block,
+        replan_feedback=replan_feedback,
+        external_context=external_context,
+        temperature=temperature,
+        lang=lang,
+        s=s,
+    )
 
 
 async def _final_quality_gate(
