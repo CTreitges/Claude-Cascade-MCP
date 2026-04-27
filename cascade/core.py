@@ -45,6 +45,7 @@ ProgressEvent = Literal[
     "cancelled",
     "log",
     "waiting_for_session",
+    "hard_stuck",
 ]
 
 ProgressCallback = Callable[[str, ProgressEvent, dict], Awaitable[None]]
@@ -374,6 +375,67 @@ async def run_cascade(
             # nagging the planner about it every single run.
             plan = augment_quality_checks_for_python(plan)
 
+            # P1.1: validate the plan is actually executable before we
+            # spin up a workspace and burn implementer-iterations on it.
+            # An empty plan (all four lists empty) means the planner
+            # returned junk — common on a flaky LLM call. Retry once
+            # before failing the task.
+            def _plan_is_actionable(p: Plan) -> bool:
+                # Truly-empty plans (no signal whatsoever) get rejected.
+                # If ANY of these fields has content, the loop has
+                # something to chew on — even a bare acceptance criterion
+                # gives the implementer + reviewer a contract to verify.
+                return bool(
+                    p.direct_ops
+                    or p.subtasks
+                    or p.steps
+                    or p.files_to_touch
+                    or p.acceptance_criteria
+                )
+
+            if not _plan_is_actionable(plan):
+                await _log(
+                    store, task_id, "warn",
+                    "plan validation: empty plan — direct_ops, subtasks, "
+                    "steps, files_to_touch all empty. Retrying planner once.",
+                )
+                try:
+                    plan = await call_planner(
+                        task,
+                        attachments=attachments,
+                        recall_context=recall,
+                        repo_candidates_block=repo_candidates_block,
+                        replan_feedback=(
+                            "Your previous plan was empty (no direct_ops, "
+                            "subtasks, steps, or files_to_touch). Produce "
+                            "an actionable plan with at least the steps "
+                            "and files_to_touch fields populated."
+                        ),
+                        external_context=external_context,
+                        temperature=planner_temperature,
+                        lang=lang,
+                        s=s,
+                    )
+                    plan = augment_quality_checks_for_python(plan)
+                except Exception as e:
+                    placeholder_root.mkdir(parents=True, exist_ok=True)
+                    ws_err = Workspace(placeholder_root)
+                    return await _fail(
+                        store, task_id, ws_err,
+                        "planner-retry on empty plan", e, progress,
+                    )
+                if not _plan_is_actionable(plan):
+                    placeholder_root.mkdir(parents=True, exist_ok=True)
+                    ws_err = Workspace(placeholder_root)
+                    return await _fail(
+                        store, task_id, ws_err, "plan validation",
+                        RuntimeError(
+                            "planner returned empty plan twice — refusing "
+                            "to start an unrunnable cascade"
+                        ),
+                        progress,
+                    )
+
         # Resolve workspace. On resume: pin to the existing workspace_path
         # so we don't accidentally jump into a different one and lose state.
         if resumed_workspace_path is not None and resumed_workspace_path.exists():
@@ -466,6 +528,31 @@ async def run_cascade(
                         {"iteration": 1, "pass": review.passed,
                          "feedback": review.feedback, "subtask": "trivial"})
             if review.passed:
+                # P1.4: re-run the plan-level quality_checks one last time.
+                # Cheap, but catches the rare case where the trivial-shortcut
+                # ops broke something the reviewer missed.
+                gate_ok, gate_failing = await _final_quality_gate(
+                    plan=plan, ws=ws, store=store, task_id=task_id,
+                    progress=progress, lang=lang,
+                )
+                if not gate_ok:
+                    summary = (
+                        "Final quality gate failed: "
+                        + ", ".join(gate_failing)
+                    )
+                    await store.update_task(
+                        task_id, status="failed",
+                        result_summary=summary, completed=True,
+                    )
+                    await _emit(progress, store, task_id, "failed",
+                                {"summary": summary})
+                    return CascadeResult(
+                        task_id=task_id, status="failed", iterations=1,
+                        plan=plan, final_review=review, workspace_path=ws.root,
+                        summary=summary, diff=full_diff,
+                        changed_files=ws.changed_paths(),
+                        error="final_quality_gate_failed",
+                    )
                 summary = f"done via trivial-shortcut ({len(ops)} ops, 1 review)"
                 await store.update_task(task_id, status="done",
                                         result_summary=summary, completed=True)
@@ -534,25 +621,28 @@ async def run_cascade(
                 sub_ok = False
                 sub_consec_fails = 0
                 sub_replans = 0
-                # Track per-check-name consecutive failures. Catches the
-                # broken-check death-loop where the SAME check (e.g.
-                # `no_bare_except_core` greppin .venv/) keeps failing
-                # regardless of what the implementer writes — the implementer
-                # cannot satisfy a check it cannot influence.
-                #
-                # Two-stage handling:
-                #   - REPAIR_CHECK_THRESHOLD (3 fails): try to self-heal the
-                #     check via a focused planner-LLM call. Most broken
-                #     checks (missing --exclude-dir, wrong scope, etc.) get
-                #     fixed here.
-                #   - BROKEN_CHECK_THRESHOLD (4 fails, including post-repair):
-                #     hard-abort. Either the repair didn't help or the
-                #     acceptance criterion is genuinely unsatisfiable.
+                # Track per-check-name consecutive failures. Three-stage
+                # handling for stuck checks:
+                #   - REPAIR_CHECK_THRESHOLD (3 fails): self-heal the check
+                #     via a focused planner-LLM call (cascade.check_repair).
+                #     Most broken checks (missing --exclude-dir, wrong
+                #     scope) get fixed here.
+                #   - BROKEN_CHECK_THRESHOLD (4 fails, post-repair):
+                #     fall through to a sub-task replan with a hint that
+                #     the check is hostile — let the planner consider
+                #     dropping or replacing it. Only if the replan-budget
+                #     is exhausted do we hard-abort (P1.3 fall-through).
                 check_consec_fails: dict[str, int] = {}
                 check_repaired_once: set[str] = set()
                 check_last_output: dict[str, str] = {}
                 REPAIR_CHECK_THRESHOLD = 3
                 BROKEN_CHECK_THRESHOLD = 4
+
+                # Empty-Ops loop-breaker (P1.2): if the implementer returns
+                # `ops=[]` twice in a row — usually with a rationale like
+                # "cannot proceed without read access" — feeding it more
+                # iterations only burns tokens. Force a replan instead.
+                empty_ops_consec = 0
                 for sub_iter in range(1, sub_iter_budget + 1):
                     cumulative_iter += 1
                     await _check_cancel(cancel_event, store, task_id)
@@ -585,6 +675,30 @@ async def run_cascade(
                                 {"iteration": cumulative_iter, "ops": len(impl.ops),
                                  "failed": len(failed_results),
                                  "subtask": subtask.name})
+
+                    # P1.2: empty-ops loop-breaker. If the implementer
+                    # produces no ops, count consecutive empties and force
+                    # a replan after 2 in a row — re-running the same
+                    # implementer with the same prompt usually just gets
+                    # the same answer. The replan resets sub_consec_fails
+                    # so the new plan gets a clean slate.
+                    if len(impl.ops) == 0:
+                        empty_ops_consec += 1
+                        if empty_ops_consec >= 2 and sub_replans < s.cascade_replan_max:
+                            await _log(
+                                store, task_id, "warn",
+                                f"sub-task {subtask.name}: implementer returned "
+                                f"0 ops {empty_ops_consec}× in a row "
+                                f"(rationale={(impl.rationale or '')[:120]!r}) — "
+                                "forcing replan instead of another empty iter",
+                            )
+                            sub_consec_fails = max(
+                                sub_consec_fails,
+                                s.cascade_replan_after_failures,
+                            )
+                            empty_ops_consec = 0
+                    else:
+                        empty_ops_consec = 0
                     # Make op-failures visible to the NEXT implementer call —
                     # otherwise the implementer only sees the reviewer's
                     # "empty diff" complaint and has no idea WHY its write
@@ -755,31 +869,76 @@ async def run_cascade(
                         name for name, n in check_consec_fails.items()
                         if n >= BROKEN_CHECK_THRESHOLD
                     ]
-                    if broken_checks and sub_replans >= 1:
+                    if broken_checks:
                         names_str = ", ".join(f"`{n}`" for n in broken_checks)
-                        msg_de = (
-                            f"❌ Stuck-Check abort: {names_str} ist {BROKEN_CHECK_THRESHOLD}× "
-                            f"hintereinander gefailed (auch nach Self-Heal-Versuch + "
-                            f"{sub_replans} Replan). Vermutlich strukturell defekt "
-                            "(greppt falsche Pfade, unrealistische Acceptance-Bedingung, …). "
-                            "Sub-Task wird abgebrochen damit der Run nicht weiter "
-                            "Tokens verbrennt."
-                        )
-                        msg_en = (
-                            f"❌ Stuck-check abort: {names_str} failed "
-                            f"{BROKEN_CHECK_THRESHOLD} iterations in a row even "
-                            f"after self-heal + {sub_replans} replan(s). Likely "
-                            "structurally broken. Sub-task aborted to stop "
-                            "burning tokens."
-                        )
-                        explain = msg_de if lang == "de" else msg_en
-                        await _log(store, task_id, "error", explain)
-                        await _emit(progress, store, task_id, "log",
-                                    {"msg": explain})
-                        all_subs_ok = False
-                        last_sub_feedback = explain
-                        sub_ok = False
-                        break  # exits the sub_iter loop; supervisor wraps up below
+                        # P1.3: before hard-aborting, try ONE more replan
+                        # with a hint that the check is hostile. Maybe the
+                        # planner can drop it or replace with something
+                        # achievable. Only hard-abort if replan-budget is
+                        # already exhausted.
+                        if sub_replans < s.cascade_replan_max:
+                            hostile_hint = (
+                                f"\n\nKRITISCH: Check(s) {names_str} sind "
+                                f"trotz Self-Heal-Versuch {BROKEN_CHECK_THRESHOLD}× "
+                                "in Folge gefailed. Überdenke ob dieser Check "
+                                "überhaupt nötig ist — ggf. weglassen, durch "
+                                "py_compile / einfache file-existence-Prüfung "
+                                "ersetzen, oder das Acceptance-Criterion "
+                                "lockern."
+                            ) if lang == "de" else (
+                                f"\n\nCRITICAL: check(s) {names_str} failed "
+                                f"{BROKEN_CHECK_THRESHOLD}× in a row even "
+                                "after self-heal. Reconsider whether the "
+                                "check is needed — drop it, replace with "
+                                "py_compile / a simple file-existence test, "
+                                "or relax the acceptance criterion."
+                            )
+                            sub_feedback = (sub_feedback or "") + hostile_hint
+                            sub_consec_fails = max(
+                                sub_consec_fails,
+                                s.cascade_replan_after_failures,
+                            )
+                            for n in broken_checks:
+                                check_consec_fails.pop(n, None)
+                            await _log(
+                                store, task_id, "warn",
+                                f"hostile check(s) {names_str}: forcing "
+                                "sub-task replan with drop-hint instead of "
+                                "hard-abort (replans_done="
+                                f"{sub_replans}/{s.cascade_replan_max})",
+                            )
+                            await _emit(progress, store, task_id, "log",
+                                        {"msg": (f"⚠️ Check(s) {names_str} "
+                                                 "renitent — versuche Replan "
+                                                 "mit Drop-Hinweis"
+                                                 if lang == "de"
+                                                 else f"⚠️ check(s) {names_str} "
+                                                      "stubborn — trying replan "
+                                                      "with drop-hint")})
+                        else:
+                            msg_de = (
+                                f"❌ Stuck-Check abort: {names_str} ist "
+                                f"{BROKEN_CHECK_THRESHOLD}× in Folge gefailed "
+                                f"(auch nach Self-Heal + {sub_replans} Replan). "
+                                "Vermutlich strukturell defekt. Sub-Task "
+                                "abgebrochen damit der Run nicht weiter "
+                                "Tokens verbrennt."
+                            )
+                            msg_en = (
+                                f"❌ Stuck-check abort: {names_str} failed "
+                                f"{BROKEN_CHECK_THRESHOLD}× in a row even "
+                                f"after self-heal + {sub_replans} replan(s). "
+                                "Likely structurally broken. Sub-task "
+                                "aborted to stop burning tokens."
+                            )
+                            explain = msg_de if lang == "de" else msg_en
+                            await _log(store, task_id, "error", explain)
+                            await _emit(progress, store, task_id, "log",
+                                        {"msg": explain})
+                            all_subs_ok = False
+                            last_sub_feedback = explain
+                            sub_ok = False
+                            break  # exits the sub_iter loop
 
                     # Sub-task local replan: if the sub-task has been stuck
                     # for `cascade_replan_after_failures` rounds AND we still
@@ -897,6 +1056,33 @@ async def run_cascade(
                     except Exception as e:
                         return await _fail(store, task_id, ws, "integration review", e, progress)
                     if integration.passed:
+                        # P1.4: cumulative final quality gate across the
+                        # whole plan. A later sub-task may have broken an
+                        # earlier sub-task's invariants.
+                        gate_ok, gate_failing = await _final_quality_gate(
+                            plan=plan, ws=ws, store=store, task_id=task_id,
+                            progress=progress, lang=lang,
+                        )
+                        if not gate_ok:
+                            summary = (
+                                "Final quality gate failed after integration: "
+                                + ", ".join(gate_failing)
+                            )
+                            await store.update_task(
+                                task_id, status="failed",
+                                result_summary=summary, completed=True,
+                            )
+                            await _emit(progress, store, task_id, "failed",
+                                        {"summary": summary})
+                            return CascadeResult(
+                                task_id=task_id, status="failed",
+                                iterations=cumulative_iter,
+                                plan=plan, final_review=integration,
+                                workspace_path=ws.root,
+                                summary=summary, diff=full_diff,
+                                changed_files=ws.changed_paths(),
+                                error="final_quality_gate_failed",
+                            )
                         summary = (
                             f"done via decomposition "
                             f"({len(subtasks)} sub-tasks, {cumulative_iter} iter"
@@ -1090,6 +1276,32 @@ async def run_cascade(
             ws.commit_iteration(iter_n)
 
             if review.passed:
+                # P1.4: re-run plan-level quality_checks before stamping done.
+                # In the no-decompose path the reviewer-pass already implies
+                # the iter's checks passed, but a cumulative re-run is still
+                # cheap insurance against accidental regressions.
+                gate_ok, gate_failing = await _final_quality_gate(
+                    plan=plan, ws=ws, store=store, task_id=task_id,
+                    progress=progress, lang=lang,
+                )
+                if not gate_ok:
+                    summary = (
+                        f"Final quality gate failed after {iter_n} iter: "
+                        + ", ".join(gate_failing)
+                    )
+                    await store.update_task(
+                        task_id, status="failed",
+                        result_summary=summary, completed=True,
+                    )
+                    await _emit(progress, store, task_id, "failed",
+                                {"summary": summary})
+                    return CascadeResult(
+                        task_id=task_id, status="failed", iterations=iter_n,
+                        plan=plan, final_review=review, workspace_path=ws.root,
+                        summary=summary, diff=ws.diff(),
+                        changed_files=ws.changed_paths(),
+                        error="final_quality_gate_failed",
+                    )
                 summary = f"done after {iter_n} iteration(s)"
                 await store.update_task(
                     task_id,
@@ -1477,6 +1689,48 @@ async def _check_cancel(ev: asyncio.Event, store: Store, task_id: str) -> None:
         await store.update_task(task_id, status="cancelled", completed=True)
         await store.log(task_id, "warn", "cancelled by request")
         raise asyncio.CancelledError()
+
+
+async def _final_quality_gate(
+    *,
+    plan: Plan,
+    ws: Workspace,
+    store: Store,
+    task_id: str,
+    progress: ProgressCallback,
+    lang: str = "de",
+) -> tuple[bool, list[str]]:
+    """Re-run all top-level plan.quality_checks one last time before stamping
+    a task as `done`. Catches the case where a later sub-task / integration
+    repair broke an earlier sub-task's invariant.
+
+    Returns (all_pass, failing_check_names). On all_pass=True the caller may
+    proceed to status='done'; on False it must mark status='failed' with a
+    clear message naming the offending check(s).
+    """
+    if not plan.quality_checks:
+        return True, []
+    failing: list[str] = []
+    for chk in plan.quality_checks:
+        try:
+            res = await ws.run_check(chk)
+        except Exception as e:
+            from .workspace import CheckResult as _CR
+            res = _CR(chk.name, False, -3, f"runner-error: {e}", 0.0)
+        if not res.ok:
+            failing.append(chk.name)
+    if failing:
+        names_str = ", ".join(f"`{n}`" for n in failing)
+        msg = (
+            f"❌ Final quality gate: {names_str} fehlgeschlagen — Task "
+            "wird NICHT als `done` markiert."
+            if lang == "de"
+            else f"❌ Final quality gate: {names_str} failed — task "
+                 "will NOT be marked `done`."
+        )
+        await _log(store, task_id, "error", msg)
+        await _emit(progress, store, task_id, "log", {"msg": msg})
+    return (not failing), failing
 
 
 async def _fail(

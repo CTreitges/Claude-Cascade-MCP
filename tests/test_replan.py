@@ -124,7 +124,7 @@ async def test_no_replan_when_passing(monkeypatch, store, s):
     """Happy path: pass on iter 1 → planner called exactly once."""
     plan = Plan(
         summary="ok",
-        steps=[],
+        steps=["s1"],  # core.py:_plan_is_actionable requires non-empty
         files_to_touch=[],
         acceptance_criteria=[],
         quality_checks=[QualityCheck(name="ok", command="true", timeout_s=5)],

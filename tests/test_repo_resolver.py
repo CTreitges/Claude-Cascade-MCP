@@ -143,7 +143,7 @@ async def test_resolve_local_missing_with_clone_fallback(tmp_path: Path) -> None
 
 
 def test_plan_default_repo_is_fresh() -> None:
-    p = Plan(summary="x", steps=[], files_to_touch=[], acceptance_criteria=[])
+    p = Plan(summary="x", steps=["s1"], files_to_touch=[], acceptance_criteria=[])
     assert p.repo.kind == "fresh"
     assert p.repo.path is None
 

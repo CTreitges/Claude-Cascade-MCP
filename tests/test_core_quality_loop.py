@@ -123,7 +123,10 @@ async def test_eventually_passing_check_completes(monkeypatch, store, s):
 async def test_no_checks_means_reviewer_decides(monkeypatch, store, s):
     plan = Plan(
         summary="x",
-        steps=[],
+        # steps must be non-empty to clear core.py:_plan_is_actionable.
+        # The point of THIS test is the absence of quality_checks, not
+        # the absence of all plan content.
+        steps=["do the thing"],
         files_to_touch=[],
         acceptance_criteria=[],
         quality_checks=[],  # explicit empty

@@ -165,6 +165,6 @@ async def test_reviewer_call_uses_settings_effort(monkeypatch):
     monkeypatch.setattr(rmod, "agent_chat", fake_agent_chat)
 
     s = Settings(cascade_reviewer_effort="low")
-    plan = Plan(summary="x", steps=[], files_to_touch=[], acceptance_criteria=[])
+    plan = Plan(summary="x", steps=["s1"], files_to_touch=[], acceptance_criteria=[])
     await rmod.call_reviewer(plan, "diff", s=s)
     assert captured["effort"] == "low"

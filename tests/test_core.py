@@ -150,7 +150,11 @@ async def test_planner_failure_marks_task_failed(monkeypatch, store, s):
 
 
 async def test_progress_callback_receives_events(monkeypatch, store, s):
-    plan = Plan(summary="s", steps=[], files_to_touch=[], acceptance_criteria=[])
+    # Note: plan must satisfy core.py:_plan_is_actionable (any of subtasks,
+    # direct_ops, steps, files_to_touch, acceptance_criteria non-empty).
+    plan = Plan(
+        summary="s", steps=["s1"], files_to_touch=[], acceptance_criteria=[],
+    )
     _patch_planner(monkeypatch, plan)
     _patch_implementer(monkeypatch, [ImplementerOutput(ops=[])])
     _patch_reviewer(monkeypatch, [ReviewResult(passed=True, feedback="")])
@@ -174,7 +178,7 @@ async def test_progress_callback_receives_events(monkeypatch, store, s):
 
 
 async def test_cancel_event_aborts_run(monkeypatch, store, s):
-    plan = Plan(summary="s", steps=[], files_to_touch=[], acceptance_criteria=[])
+    plan = Plan(summary="s", steps=["s1"], files_to_touch=[], acceptance_criteria=[])
     cancel = asyncio.Event()
 
     async def slow_planner(*_a, **_kw):
@@ -191,7 +195,7 @@ async def test_cancel_event_aborts_run(monkeypatch, store, s):
 
 
 async def test_resume_continues_from_existing_task(monkeypatch, store, s):
-    plan = Plan(summary="s", steps=[], files_to_touch=[], acceptance_criteria=[])
+    plan = Plan(summary="s", steps=["s1"], files_to_touch=[], acceptance_criteria=[])
     _patch_planner(monkeypatch, plan)
     _patch_implementer(monkeypatch, [ImplementerOutput(ops=[])])
     _patch_reviewer(monkeypatch, [ReviewResult(passed=True, feedback="")])

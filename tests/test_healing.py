@@ -62,6 +62,9 @@ async def test_monitor_emits_stuck_alert_after_threshold():
         check_interval_s=0.05,
         stuck_threshold_s=10.0,
         stuck_alert_threshold_s=20.0,
+        # Push hard_stuck above the simulated idle (500s) so this test
+        # exercises the alert tier, not the hard_stuck tier.
+        hard_stuck_threshold_s=10_000.0,
     )
     async with HealingMonitor(state, fake_progress, "abc123", config=cfg):
         await asyncio.sleep(0.2)  # let the loop tick a few times

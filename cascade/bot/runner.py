@@ -399,6 +399,42 @@ async def run_task_for_chat(
                 state["current_phase"] = (
                     f"warte ({when})" if lang == "de" else f"waiting ({when})"
                 )
+            elif event == "hard_stuck":
+                # P1.5: 5+ minutes without ANY progress event.
+                # Show the same Abort/Keep-waiting keyboard as the
+                # waiting_for_session prompt — taps go through TASK_REGISTRY
+                # to the cancel_event so /cancel and the keyboard are
+                # interchangeable.
+                idle_s = int(payload.get("idle_s") or 0)
+                last_event = payload.get("last_event") or "?"
+                idle_min = idle_s // 60
+                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                from telegram.constants import ParseMode as _PM
+                kb = InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "✋ Abbrechen" if lang == "de" else "✋ Abort",
+                        callback_data=f"wait:{task_id}:abort",
+                    ),
+                    InlineKeyboardButton(
+                        "⏳ Weiter warten" if lang == "de" else "⏳ Keep waiting",
+                        callback_data=f"wait:{task_id}:keep",
+                    ),
+                ]])
+                head = (
+                    f"⚠️ *Cascade hängt seit {idle_min} min* "
+                    f"(letztes Event: `{last_event}`)\n"
+                    f"_Möglicherweise blockiert oder LLM-Call extrem langsam._"
+                ) if lang == "de" else (
+                    f"⚠️ *Cascade has been silent for {idle_min} min* "
+                    f"(last event: `{last_event}`)\n"
+                    f"_Maybe blocked or an LLM call is unusually slow._"
+                )
+                try:
+                    await msg.reply_text(
+                        head, parse_mode=_PM.MARKDOWN, reply_markup=kb,
+                    )
+                except Exception:
+                    pass
             elif event == "iteration_failed":
                 fb = (payload.get("feedback") or "").strip()
                 if fb:

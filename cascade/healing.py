@@ -98,6 +98,12 @@ class HealingConfig:
     check_interval_s: float = 15.0
     stuck_threshold_s: float = 90.0
     stuck_alert_threshold_s: float = 180.0
+    # P1.5: when there's been NO progress event for this long, the
+    # monitor escalates by emitting a `hard_stuck` event that the
+    # runner surfaces as an inline keyboard ("Abort / Keep waiting").
+    # Without this, a hung subprocess just keeps logging "still within
+    # tolerance" forever.
+    hard_stuck_threshold_s: float = 300.0
     enabled: bool = True
 
 
@@ -165,6 +171,7 @@ class HealingMonitor:
         self._stop = asyncio.Event()
         self._last_alert_emitted_at: float = 0.0
         self._last_perm_emitted_for: str = ""
+        self._last_hard_stuck_emitted_at: float = 0.0
         self._last_impl_stuck_hash: str = ""
 
     async def __aenter__(self) -> "HealingMonitor":
@@ -199,8 +206,36 @@ class HealingMonitor:
         now = time.monotonic()
         idle = now - self.state.last_event_at
 
-        # 1) Stuck detection
-        if idle > self.config.stuck_alert_threshold_s:
+        # 1) Stuck detection — three escalation tiers:
+        #    - hard_stuck_threshold_s (default 300s): emit `hard_stuck`
+        #      progress event so the runner can surface an inline keyboard
+        #      and let the user decide. (P1.5)
+        #    - stuck_alert_threshold_s (default 180s): WARNING + log-event,
+        #      visible in the chat as a "still working" notice.
+        #    - stuck_threshold_s (default 90s): DEBUG-only chatter.
+        if idle > self.config.hard_stuck_threshold_s:
+            # Emit at most once per hard_stuck_threshold_s window so the
+            # user doesn't get spammed. The runner shows the keyboard;
+            # tapping Abort sets the cancel_event the same way /cancel
+            # would. Tapping "keep waiting" just dismisses the keyboard.
+            if (now - self._last_hard_stuck_emitted_at) > self.config.hard_stuck_threshold_s:
+                msg = (
+                    f"hard-stuck: {idle:.0f}s without ANY progress event "
+                    f"(last={self.state.last_event!r}, iter={self.state.iteration})"
+                )
+                log.warning(msg)
+                await _safe_emit(
+                    self.progress, self.task_id, "hard_stuck",
+                    {
+                        "msg": msg,
+                        "idle_s": int(idle),
+                        "last_event": self.state.last_event,
+                        "iteration": self.state.iteration,
+                    },
+                )
+                self._last_hard_stuck_emitted_at = now
+                self._last_alert_emitted_at = now  # don't double-emit
+        elif idle > self.config.stuck_alert_threshold_s:
             # only emit one alert per stuck-window, refreshed every threshold
             if (now - self._last_alert_emitted_at) > self.config.stuck_alert_threshold_s:
                 msg = (
