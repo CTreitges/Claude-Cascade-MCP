@@ -538,10 +538,21 @@ async def run_cascade(
                 # broken-check death-loop where the SAME check (e.g.
                 # `no_bare_except_core` greppin .venv/) keeps failing
                 # regardless of what the implementer writes — the implementer
-                # cannot satisfy a check it cannot influence, so we have to
-                # surface this as a hard abort rather than burn iterations.
+                # cannot satisfy a check it cannot influence.
+                #
+                # Two-stage handling:
+                #   - REPAIR_CHECK_THRESHOLD (3 fails): try to self-heal the
+                #     check via a focused planner-LLM call. Most broken
+                #     checks (missing --exclude-dir, wrong scope, etc.) get
+                #     fixed here.
+                #   - BROKEN_CHECK_THRESHOLD (4 fails, including post-repair):
+                #     hard-abort. Either the repair didn't help or the
+                #     acceptance criterion is genuinely unsatisfiable.
                 check_consec_fails: dict[str, int] = {}
-                BROKEN_CHECK_THRESHOLD = 4  # iterations
+                check_repaired_once: set[str] = set()
+                check_last_output: dict[str, str] = {}
+                REPAIR_CHECK_THRESHOLD = 3
+                BROKEN_CHECK_THRESHOLD = 4
                 for sub_iter in range(1, sub_iter_budget + 1):
                     cumulative_iter += 1
                     await _check_cancel(cancel_event, store, task_id)
@@ -652,17 +663,94 @@ async def run_cascade(
                     # Track which check names failed THIS iteration; bump or
                     # reset their consecutive-fail counters.
                     failing_now = {r.name for r in check_results if not r.ok}
+                    for r in check_results:
+                        if not r.ok:
+                            check_last_output[r.name] = (r.detail or "")[:4000]
                     for name in list(check_consec_fails.keys()):
                         if name not in failing_now:
                             check_consec_fails.pop(name, None)
                     for name in failing_now:
                         check_consec_fails[name] = check_consec_fails.get(name, 0) + 1
-                    # Hard-abort if a single check has been failing this long
-                    # AND we've already done at least one replan to give the
-                    # planner a chance to fix it. If the new plan still can't
-                    # produce a passing run on this check, the check itself
-                    # is broken (or unsatisfiable) — keep iterating burns
-                    # tokens forever.
+
+                    # ─── Stage 1: self-heal the broken check ───
+                    # Each check gets ONE repair attempt. After REPAIR_THRESHOLD
+                    # consecutive fails, ask a planner-LLM to rewrite the check
+                    # command itself (most often: missing --exclude-dir).
+                    repair_candidates = [
+                        name for name, n in check_consec_fails.items()
+                        if n >= REPAIR_CHECK_THRESHOLD
+                        and name not in check_repaired_once
+                    ]
+                    if repair_candidates:
+                        from .check_repair import repair_quality_check
+                        for cand_name in repair_candidates:
+                            check_repaired_once.add(cand_name)
+                            broken = next(
+                                (c for c in sub_plan.quality_checks
+                                 if c.name == cand_name),
+                                None,
+                            )
+                            if broken is None:
+                                continue
+                            await _log(
+                                store, task_id, "warn",
+                                f"check '{cand_name}' failed "
+                                f"{check_consec_fails.get(cand_name, '?')}× "
+                                "in a row — attempting self-heal",
+                            )
+                            await _emit(progress, store, task_id, "log",
+                                        {"msg": f"🔧 Repariere Check `{cand_name}` "
+                                                "(Self-Heal)…"
+                                                if lang == "de"
+                                                else f"🔧 Repairing check `{cand_name}` "
+                                                     "(self-heal)…"})
+                            repaired = await repair_quality_check(
+                                broken,
+                                failure_output=check_last_output.get(cand_name, ""),
+                                consecutive_failures=check_consec_fails.get(
+                                    cand_name, 0,
+                                ),
+                                sub_plan_summary=sub_plan.summary,
+                                lang=lang,
+                                s=s,
+                            )
+                            if repaired is None:
+                                await _log(
+                                    store, task_id, "warn",
+                                    f"check '{cand_name}': self-heal declined — "
+                                    "will hard-abort if it fails again",
+                                )
+                                continue
+                            new_checks = []
+                            for c in sub_plan.quality_checks:
+                                new_checks.append(
+                                    repaired if c.name == cand_name else c
+                                )
+                            sub_plan = sub_plan.model_copy(
+                                update={"quality_checks": new_checks},
+                            )
+                            check_consec_fails.pop(cand_name, None)
+                            check_last_output.pop(cand_name, None)
+                            await _log(
+                                store, task_id, "info",
+                                f"check '{cand_name}' repaired: "
+                                f"{broken.command!r} → {repaired.command!r}",
+                            )
+                            await _emit(
+                                progress, store, task_id, "log",
+                                {"msg": f"✅ Check `{cand_name}` repariert: "
+                                        f"`{repaired.command[:120]}`"
+                                        if lang == "de"
+                                        else f"✅ Check `{cand_name}` repaired: "
+                                             f"`{repaired.command[:120]}`"},
+                            )
+
+                    # ─── Stage 2: hard-abort if even after repair the check
+                    # keeps failing. The threshold counts include any post-
+                    # repair iterations (we explicitly cleared the counter
+                    # for repaired checks above, so this only fires for
+                    # checks the repair actually made worse or that we
+                    # declined to repair).
                     broken_checks = [
                         name for name, n in check_consec_fails.items()
                         if n >= BROKEN_CHECK_THRESHOLD
@@ -671,18 +759,17 @@ async def run_cascade(
                         names_str = ", ".join(f"`{n}`" for n in broken_checks)
                         msg_de = (
                             f"❌ Stuck-Check abort: {names_str} ist {BROKEN_CHECK_THRESHOLD}× "
-                            f"hintereinander gefailed (auch nach {sub_replans} Replan). "
-                            "Vermutlich strukturell defekt (greppt falsche Pfade, "
-                            "unrealistische Acceptance-Bedingung, …). "
+                            f"hintereinander gefailed (auch nach Self-Heal-Versuch + "
+                            f"{sub_replans} Replan). Vermutlich strukturell defekt "
+                            "(greppt falsche Pfade, unrealistische Acceptance-Bedingung, …). "
                             "Sub-Task wird abgebrochen damit der Run nicht weiter "
                             "Tokens verbrennt."
                         )
                         msg_en = (
                             f"❌ Stuck-check abort: {names_str} failed "
                             f"{BROKEN_CHECK_THRESHOLD} iterations in a row even "
-                            f"after {sub_replans} replan(s). Likely structurally "
-                            "broken (greps the wrong paths, unsatisfiable "
-                            "acceptance rule, …). Sub-task aborted to stop "
+                            f"after self-heal + {sub_replans} replan(s). Likely "
+                            "structurally broken. Sub-task aborted to stop "
                             "burning tokens."
                         )
                         explain = msg_de if lang == "de" else msg_en
