@@ -64,7 +64,7 @@ async def implementer_chat(
     effort: str | None = None,
     temperature: float | None = None,
     s: Settings | None = None,
-    timeout_s: float = 600,
+    timeout_s: float = 1800,
 ) -> LLMReply:
     s = s or settings()
     provider = provider or s.cascade_implementer_provider
@@ -127,7 +127,7 @@ async def agent_chat(
     effort: str | None = None,
     temperature: float | None = None,
     attachments: list | None = None,
-    timeout_s: float = 600,
+    timeout_s: float = 1800,
     s: Settings | None = None,
     retry_max_total_wait_s: float | None = None,
     retry_min_backoff_s: float | None = None,
