@@ -366,13 +366,13 @@ async def run_task_for_chat(
                     f"_{reason[:200]}_\n"
                     f"_(Cascade läuft automatisch weiter sobald wieder verfügbar.)_\n"
                     f"💡 _Live-Switch zu anderem Provider:_ "
-                    f"`/stop {task_id}` → `/models` → `/resume {task_id}`"
+                    f"`/cancel {task_id}` → `/models` → `/resume {task_id}`"
                 ) if lang == "de" else (
                     f"⏳ *Waiting for next session window* (attempt {attempt}) — {when}\n"
                     f"_{reason[:200]}_\n"
                     f"_(Cascade resumes automatically when available.)_\n"
                     f"💡 _Live-switch to another provider:_ "
-                    f"`/stop {task_id}` → `/models` → `/resume {task_id}`"
+                    f"`/cancel {task_id}` → `/models` → `/resume {task_id}`"
                 )
                 # Inline keyboard so the user can decide right here: keep
                 # waiting OR abort the task. Without this the only way out

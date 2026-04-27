@@ -665,7 +665,7 @@ async def run_cascade(
                     failing_now = {r.name for r in check_results if not r.ok}
                     for r in check_results:
                         if not r.ok:
-                            check_last_output[r.name] = (r.detail or "")[:4000]
+                            check_last_output[r.name] = (r.output or "")[:4000]
                     for name in list(check_consec_fails.keys()):
                         if name not in failing_now:
                             check_consec_fails.pop(name, None)

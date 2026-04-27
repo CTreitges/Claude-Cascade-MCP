@@ -179,9 +179,9 @@ def format_milestone(event: str, payload: dict, lang: str = "de") -> list[str]:
             out.append(f"   ↳ {reason}")
         if task_id:
             tip = (
-                f"   💡 Live-switch provider: /stop {task_id} → /models → /resume {task_id}"
+                f"   💡 Live-switch provider: /cancel {task_id} → /models → /resume {task_id}"
                 if lang != "de"
-                else f"   💡 Live-Switch Provider: /stop {task_id} → /models → /resume {task_id}"
+                else f"   💡 Live-Switch Provider: /cancel {task_id} → /models → /resume {task_id}"
             )
             out.append(tip)
         return out

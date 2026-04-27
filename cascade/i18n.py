@@ -154,9 +154,8 @@ _STRINGS: dict[str, dict[Lang, str]] = {
             "/history — letzte 10 Tasks\n"
             "/queue — was läuft gerade\n"
             "/wait — wer wartet gerade auf Rate-Limit / Session-Window + ETA\n"
-            "/cancel `[id]` — laufenden Task abbrechen\n"
-            "/stop `[id]` — Task stoppen (ohne id: ALLE laufenden Tasks)\n"
-            "/abort — alles laufende killen\n"
+            "/cancel `[id]` — laufenden Task abbrechen (auch Orphans im DB)\n"
+            "/abort — ALLES laufende killen + DB-Orphans aufräumen\n"
             "/dryrun `<task>` — nur planen, nichts ausführen (billig)\n\n"
 
             "*▸ Wieder anfassen (failed Tasks)*\n"
@@ -173,7 +172,7 @@ _STRINGS: dict[str, dict[Lang, str]] = {
             "Cloud-LLM-Errors werden bis zu 7 Tage lang im 1h-Takt automatisch "
             "retried. Wenn du in der Zwischenzeit auf einen anderen Provider "
             "(z.B. von Ollama Cloud auf Claude) wechseln willst:\n"
-            "1. `/stop <id>` — bricht den Wait-Sleep sofort ab\n"
+            "1. `/cancel <id>` — bricht den Wait-Sleep sofort ab\n"
             "2. `/models` — neuen Worker auswählen\n"
             "3. `/resume <id>` — macht ab letzter Iteration mit neuem Model weiter\n\n"
 
@@ -256,9 +255,8 @@ _STRINGS: dict[str, dict[Lang, str]] = {
             "/history — last 10 tasks\n"
             "/queue — what's running\n"
             "/wait — who is waiting on a rate-limit / session window + ETA\n"
-            "/cancel `[id]` — cancel a running task\n"
-            "/stop `[id]` — stop a task (no id: ALL running tasks)\n"
-            "/abort — kill everything running\n"
+            "/cancel `[id]` — cancel a running task (handles DB orphans too)\n"
+            "/abort — kill EVERYTHING running + sweep DB orphans\n"
             "/dryrun `<task>` — plan only, don't execute (cheap)\n\n"
 
             "*▸ Retrying (failed tasks)*\n"
@@ -275,7 +273,7 @@ _STRINGS: dict[str, dict[Lang, str]] = {
             "Cloud-LLM errors are retried automatically every 1h for up to 7 "
             "days. If you'd rather swap to a different provider (e.g. Ollama "
             "Cloud → Claude) while it's stuck:\n"
-            "1. `/stop <id>` — breaks the wait-sleep immediately\n"
+            "1. `/cancel <id>` — breaks the wait-sleep immediately\n"
             "2. `/models` — pick a different worker\n"
             "3. `/resume <id>` — continues from the last iteration with the new model\n\n"
 

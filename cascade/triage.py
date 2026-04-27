@@ -260,7 +260,7 @@ async def triage(
         "stop the task", "stop all tasks", "cancel all tasks",
         "kill the task", "kill the cascade", "kill everything",
     )
-    short_cancel_words = ("/stop", "/cancel", "/abort")
+    short_cancel_words = ("/cancel", "/abort")
     if (
         any(p in msg_l for p in cancel_phrases_de + cancel_phrases_en)
         or any(msg_l.startswith(w) for w in short_cancel_words)
@@ -269,18 +269,18 @@ async def triage(
         if lang == "de":
             reply = (
                 "🚫 Wenn du einen laufenden Cascade-Task stoppen willst:\n"
-                "• `/stop <id>` — eine bestimmte Task abbrechen "
+                "• `/cancel <id>` — eine bestimmte Task abbrechen "
                 "(IDs siehst du in `/history` oder `/queue`).\n"
-                "• `/stop` ohne ID — ALLE laufenden Tasks abbrechen.\n\n"
+                "• `/abort` — ALLES laufende killen + DB-Orphans aufräumen.\n\n"
                 "_Ich starte deshalb keinen neuen Cascade-Task — das wäre "
                 "ein Meta-Endlos-Loop._"
             )
         else:
             reply = (
                 "🚫 To stop a running cascade task:\n"
-                "• `/stop <id>` — cancel a specific task "
+                "• `/cancel <id>` — cancel a specific task "
                 "(IDs are in `/history` or `/queue`).\n"
-                "• `/stop` with no id — cancel ALL running tasks.\n\n"
+                "• `/abort` — kill EVERYTHING running + sweep DB orphans.\n\n"
                 "_I'm not spawning a new cascade for this — that would be a "
                 "meta-infinite-loop._"
             )
