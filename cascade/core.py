@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import logging
+import re
 import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -689,6 +690,32 @@ async def run_cascade(
                                 {"iteration": cumulative_iter, "subtask": subtask.name})
                     ws_files = ws.list_files()
                     ctx_files = ws.candidate_context_files(sub_plan.files_to_touch, limit=12)
+                    # Feedback-driven file inclusion: the reviewer often
+                    # names the exact file that needs fixing
+                    # (`tests/test_smoke.py`, `tests/conftest.py`, …).
+                    # Without this the implementer can keep iterating
+                    # blind because those files weren't in
+                    # plan.files_to_touch and candidate_context_files
+                    # picked something else under its limit=12.
+                    feedback_paths = _extract_paths_from_feedback(sub_feedback)
+                    if feedback_paths:
+                        existing_set = set(ctx_files)
+                        added = []
+                        for p in feedback_paths:
+                            if p in existing_set:
+                                continue
+                            full = ws.root / p
+                            if full.exists() and full.is_file():
+                                ctx_files.append(p)
+                                added.append(p)
+                                if len(ctx_files) >= 20:
+                                    break
+                        if added:
+                            await _log(
+                                store, task_id, "info",
+                                f"feedback-driven file inclusion: added "
+                                f"{added!r} to implementer context",
+                            )
                     file_contents = ws.read_files(ctx_files) if ctx_files else {}
                     try:
                         impl = await call_implementer(
@@ -864,6 +891,30 @@ async def run_cascade(
                             if review.feedback else op_failure_block
                         )
                     sub_consec_fails += 1
+
+                    # Severity-aware replan trigger: if the reviewer
+                    # marked the failure as `severity=high` we skip the
+                    # cascade_replan_after_failures threshold and trigger
+                    # a replan after a SINGLE failed iter. High-severity
+                    # feedback usually carries a concrete fix-list that
+                    # the planner needs to incorporate explicitly —
+                    # iterating the implementer once more with the same
+                    # plan typically just produces the same wrong diff.
+                    if (
+                        getattr(review, "severity", "low") == "high"
+                        and sub_replans < s.cascade_replan_max
+                        and sub_consec_fails < s.cascade_replan_after_failures
+                    ):
+                        await _log(
+                            store, task_id, "warn",
+                            f"reviewer severity=high — escalating to replan "
+                            f"after iter {cumulative_iter} (skipping the "
+                            f"{s.cascade_replan_after_failures}-fail wait)",
+                        )
+                        sub_consec_fails = max(
+                            sub_consec_fails,
+                            s.cascade_replan_after_failures,
+                        )
 
                     # Track which check names failed THIS iteration; bump or
                     # reset their consecutive-fail counters.
@@ -2044,6 +2095,50 @@ async def _final_quality_gate(
         await _log(store, task_id, "error", msg)
         await _emit(progress, store, task_id, "log", {"msg": msg})
     return (not failing), failing
+
+
+_REVIEWER_PATH_RX = re.compile(
+    # Path-like tokens: at least one slash or a typical Python/JS extension.
+    # Must look like a relative path (no leading / or http://). Matches
+    # things like `tests/conftest.py`, `scdl_plugin/downloader.py`,
+    # `src/x/y.tsx`, `Dockerfile` (treated as filename below).
+    r"(?<![\w/.-])([\w.-]+(?:/[\w.-]+){1,4}\.[a-zA-Z0-9]{1,5})(?![\w/.-])"
+)
+
+
+def _extract_paths_from_feedback(feedback: str | None) -> list[str]:
+    """Pull file-path-like tokens out of reviewer feedback.
+
+    Used by the sub-task loop to widen the implementer's context window:
+    if the reviewer keeps complaining about `tests/test_smoke.py`, that
+    file should land in `EXISTING FILE CONTENTS` for the next iter even
+    if it isn't in plan.files_to_touch. Without this the implementer
+    works blind on whatever files candidate_context_files happened to
+    pick — often missing the exact file the reviewer just named.
+
+    Returns deduplicated list of relative paths, preserving first-seen
+    order. Strips obvious junk (paths starting with /, http://, …).
+    """
+    if not feedback:
+        return []
+    seen: list[str] = []
+    seen_set: set[str] = set()
+    for m in _REVIEWER_PATH_RX.finditer(feedback):
+        p = m.group(1)
+        # Filter out absolute paths and URLs.
+        if p.startswith("/") or "://" in p or p.startswith("."):
+            continue
+        if p in seen_set:
+            continue
+        # Reject paths with too many dots (probably package names like
+        # `foo.bar.baz`).
+        if p.count("/") == 0:
+            continue
+        seen_set.add(p)
+        seen.append(p)
+        if len(seen) >= 8:
+            break
+    return seen
 
 
 async def _fail(
