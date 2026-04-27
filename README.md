@@ -1,7 +1,16 @@
 # Cascade-Bot-MCP
 
+[![npm version](https://img.shields.io/npm/v/cascade-bot-mcp.svg)](https://www.npmjs.com/package/cascade-bot-mcp)
+[![GitHub release](https://img.shields.io/github/v/release/CTreitges/cascade-bot-mcp)](https://github.com/CTreitges/cascade-bot-mcp/releases)
+[![Tests](https://img.shields.io/badge/tests-457%20passing-brightgreen)](https://github.com/CTreitges/cascade-bot-mcp)
+
 > A multi-agent **Plan → Implement → Review** loop you can talk to from
-> Telegram, Claude Code, or the CLI.
+> Telegram, Claude Code, or the CLI. **v0.3.0 — the "self-healing
+> cascade" release** ([changelog](CHANGELOG.md#030--2026-04-27)):
+> broken quality-checks self-repair, integration review runs its own
+> objective checks, and the planner sees full reviewer feedback on
+> replan. Default implementer is `kimi-k2.6` — top of SWE-bench
+> Verified April 2026 at 80.2 %.
 
 Cascade-Bot watches a task all the way from "make me a thing" through
 planning, implementation, quality-checks, and review — and keeps going
