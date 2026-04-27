@@ -611,10 +611,30 @@ async def run_task_for_chat(
                 # Events are flowing — no need to repost yet, the original
                 # status_msg edits are still visible-ish.
                 continue
-            if lang == "de":
-                tag = f"{HB_MARKER}  {mark} noch dran — *{phase}* ({elapsed}s)"
+            # Format elapsed as `Xm Ys` for runs >60s (more legible than
+            # `347s`). Sub-minute runs keep the seconds-only form.
+            if elapsed >= 60:
+                m, sec = divmod(elapsed, 60)
+                elapsed_str = f"{m}m {sec:02d}s"
             else:
-                tag = f"{HB_MARKER}  {mark} still working — *{phase}* ({elapsed}s)"
+                elapsed_str = f"{elapsed}s"
+            # Also surface idle-time once it gets noticeable — helps the
+            # user judge whether things are still moving (idle small) or
+            # stuck on one slow LLM call (idle approaching heartbeat).
+            idle_int = int(idle)
+            idle_suffix = (
+                f" · idle {idle_int}s" if idle_int >= 30 else ""
+            )
+            if lang == "de":
+                tag = (
+                    f"{HB_MARKER}  {mark} noch dran — *{phase}* "
+                    f"({elapsed_str}{idle_suffix})"
+                )
+            else:
+                tag = (
+                    f"{HB_MARKER}  {mark} still working — *{phase}* "
+                    f"({elapsed_str}{idle_suffix})"
+                )
             lines = state["lines"]
             if lines and lines[-1].startswith(HB_MARKER):
                 lines[-1] = tag

@@ -546,6 +546,14 @@ async def run_cascade(
                     )
                     await _emit(progress, store, task_id, "failed",
                                 {"summary": summary})
+                    # P3.3: failures are the most instructive runs to
+                    # reflect on — capture what went sideways for future
+                    # similar tasks.
+                    await _try_reflect(
+                        task=task, plan=plan, iterations=1,
+                        final_diff=full_diff, task_id=task_id,
+                        store=store, s=s, lang=lang,
+                    )
                     return CascadeResult(
                         task_id=task_id, status="failed", iterations=1,
                         plan=plan, final_review=review, workspace_path=ws.root,
@@ -1119,6 +1127,12 @@ async def run_cascade(
                             )
                             await _emit(progress, store, task_id, "failed",
                                         {"summary": summary})
+                            await _try_reflect(
+                                task=task, plan=plan,
+                                iterations=cumulative_iter,
+                                final_diff=full_diff, task_id=task_id,
+                                store=store, s=s, lang=lang,
+                            )
                             return CascadeResult(
                                 task_id=task_id, status="failed",
                                 iterations=cumulative_iter,
@@ -1347,6 +1361,11 @@ async def run_cascade(
                     )
                     await _emit(progress, store, task_id, "failed",
                                 {"summary": summary})
+                    await _try_reflect(
+                        task=task, plan=plan, iterations=iter_n,
+                        final_diff=ws.diff(), task_id=task_id,
+                        store=store, s=s, lang=lang,
+                    )
                     return CascadeResult(
                         task_id=task_id, status="failed", iterations=iter_n,
                         plan=plan, final_review=review, workspace_path=ws.root,
@@ -1505,6 +1524,14 @@ async def run_cascade(
                 await _emit(progress, store, task_id, "failed",
                             {"reason": "stagnation_replan_exhausted",
                              "feedback": feedback})
+                # P3.3: postmortem on stagnation aborts is high-value —
+                # this is the cascade telling us something about how
+                # plan and reviewer-feedback got locked together.
+                await _try_reflect(
+                    task=task, plan=plan, iterations=iter_n,
+                    final_diff=ws.diff(), task_id=task_id,
+                    store=store, s=s, lang=lang,
+                )
                 return CascadeResult(
                     task_id=task_id,
                     status="failed",
