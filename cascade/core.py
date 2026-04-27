@@ -1935,7 +1935,15 @@ def augment_quality_checks_for_python(plan: Plan) -> Plan:
 
 def _build_replan_feedback(prev_plan: Plan, iter_history: list) -> str:
     """Render a compact summary of the previous plan + iteration failures
-    so the planner can produce a corrected plan."""
+    so the planner can produce a corrected plan.
+
+    The most recent reviewer feedback is rendered nearly in full because
+    that's where the concrete fix-list lives. Older iterations get a
+    short tag — they're context, not actionable. Without this the planner
+    saw only the first 300 chars of the latest review and produced
+    plans that aimed at the symptom-summary instead of the actual fixes
+    the reviewer enumerated.
+    """
     lines = [
         "PREVIOUS PLAN (now superseded):",
         f"  summary: {prev_plan.summary}",
@@ -1946,17 +1954,28 @@ def _build_replan_feedback(prev_plan: Plan, iter_history: list) -> str:
     ]
     for qc in prev_plan.quality_checks:
         lines.append(f"    - name={qc.name!r} command={qc.command!r}")
-    lines.append("\nITERATION HISTORY:")
+    lines.append("\nITERATION HISTORY (oldest → newest):")
     runtime_iters = [i for i in iter_history if i.n > 0]
-    for it in runtime_iters[-4:]:  # last few iterations only
+    keep = runtime_iters[-4:]
+    for idx, it in enumerate(keep):
+        is_latest = (idx == len(keep) - 1)
+        # Latest iter: render the full feedback (truncated only at 4kB
+        # to avoid prompt blowup). Older iters: 300-char summary.
+        budget = 4000 if is_latest else 300
+        feedback = (it.reviewer_feedback or "").strip()[:budget]
+        marker = " ← LATEST (full)" if is_latest else ""
         lines.append(
-            f"  iter {it.n}: pass={it.reviewer_pass} "
-            f"feedback={(it.reviewer_feedback or '').strip()[:300]!r}"
+            f"  iter {it.n}: pass={it.reviewer_pass}{marker}\n"
+            f"    feedback: {feedback!r}"
         )
     lines.append(
-        "\nLikely root cause to consider: were the quality_checks commands "
-        "correct for this Linux runner? (Use python3, not python; absolute "
-        "paths; cwd is the repo root.) Adjust the plan accordingly."
+        "\nLikely root causes to consider:"
+        "\n  - quality_checks commands correct for Linux? "
+        "(python3, not python; absolute paths; cwd is repo root.)"
+        "\n  - missing test stubs / mock modules at collection time?"
+        "\n  - reviewer enumerated a numbered fix-list — the new plan "
+        "should make those fixes part of the steps / acceptance, not "
+        "leave them implicit."
     )
     return "\n".join(lines)
 
