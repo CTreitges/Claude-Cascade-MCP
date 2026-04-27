@@ -179,3 +179,40 @@ def test_function_inside_method_is_also_checked(ws: Workspace):
     res = ws.apply_ops([FileOp(op="write", path="cls.py", content=code)])
     assert res[0].ok is False
     assert "stub" in res[0].detail.lower()
+
+
+# ─── P2.1 op-validation (commit 22aa346) ────────────────────────────
+
+
+def test_p21_empty_write_is_rejected(ws: Workspace):
+    """`op=write` with `content=""` would silently truncate the file —
+    almost never what the implementer means. Pre-validation rejects it."""
+    res = ws.apply_ops([FileOp(op="write", path="empty.txt", content="")])
+    assert res[0].ok is False
+    assert "empty" in res[0].detail.lower()
+
+
+def test_p21_duplicate_write_in_same_batch_is_rejected(ws: Workspace):
+    """Two writes to the same path in one batch — last-wins is confusing
+    and usually means the implementer second-guessed itself. Reject so
+    the implementer must consolidate into one op."""
+    res = ws.apply_ops([
+        FileOp(op="write", path="dup.py", content="a = 1\n"),
+        FileOp(op="write", path="dup.py", content="a = 2\n"),
+    ])
+    assert res[0].ok is True
+    assert res[1].ok is False
+    assert "duplicate" in res[1].detail.lower()
+
+
+def test_p21_no_op_edit_is_rejected(ws: Workspace):
+    """`op=edit` with `find == replace` does nothing but eats an op slot.
+    Reject so the implementer has to pick a real change."""
+    # First create a file we can attempt to edit.
+    ws.apply_ops([FileOp(op="write", path="real.py", content="x = 1\n")])
+    res = ws.apply_ops([FileOp(
+        op="edit", path="real.py",
+        find="x = 1", replace="x = 1",   # identical — no-op
+    )])
+    assert res[0].ok is False
+    assert "no-op" in res[0].detail.lower() or "no_op" in res[0].detail.lower()
