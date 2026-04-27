@@ -102,6 +102,15 @@ def test_is_short_backoff_signal_matches_process_kills_and_blips():
     assert is_short_backoff_signal("Operation timed out")
     assert is_short_backoff_signal("HTTP request timeout")
     assert is_short_backoff_signal("Network is unreachable")
+    # 5xx infrastructure blips (commit on Run #4 wedge):
+    assert is_short_backoff_signal("status code: 500")
+    assert is_short_backoff_signal("status_code=502")
+    assert is_short_backoff_signal("HTTP 504")
+    assert is_short_backoff_signal("Internal Server Error (ref: abc123)")
+    assert is_short_backoff_signal("Bad Gateway")
+    assert is_short_backoff_signal("Gateway Timeout")
+    # 503 stays LONG-backoff: it's the canonical "overload, come back later":
+    assert not is_short_backoff_signal("status code: 503")
     # plain rate-limits stay long-backoff:
     assert not is_short_backoff_signal("HTTP 429 Too Many Requests")
     assert not is_short_backoff_signal("Resets in 2 hours")

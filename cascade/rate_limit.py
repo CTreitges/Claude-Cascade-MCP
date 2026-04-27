@@ -118,6 +118,15 @@ _SHORT_BACKOFF_RX: list[re.Pattern] = [
     re.compile(r"timed\s+out", re.I),
     re.compile(r"timeout", re.I),
     re.compile(r"network\s+is\s+unreachable", re.I),
+    # Cloud-provider 5xx that are typically transient infrastructure
+    # blips (500, 502, 504) — clear in seconds-to-minutes, not hours.
+    # 503 STAYS long-backoff: it's the standard "overload, come back
+    # later" signal and lives in _RL_RX. 529 (Anthropic overload) too.
+    re.compile(r"status[_\s]*code[_\s]*[:=]?[_\s]*50[024]\b", re.I),
+    re.compile(r"\bhttp\s*50[024]\b", re.I),
+    re.compile(r"internal\s+server\s+error", re.I),
+    re.compile(r"bad\s+gateway", re.I),
+    re.compile(r"gateway\s+timeout", re.I),
 ]
 
 
