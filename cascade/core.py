@@ -1314,6 +1314,16 @@ async def run_cascade(
                 # ops break-out, no feedback-driven file inclusion).
                 integration_review_paths: list[str] = []
                 empty_ops_consec_int = 0
+                # Per-check consecutive failures for integration-review,
+                # mirror of the sub-task loop's check_consec_fails. Lets
+                # the integration phase repair its own broken checks via
+                # the same self-heal mechanism — e.g. a top-level
+                # `py-compile` check that still references the old
+                # package-name after the sub-tasks renamed it.
+                int_check_consec_fails: dict[str, int] = {}
+                int_check_repaired_once: set[str] = set()
+                int_check_last_output: dict[str, str] = {}
+                INT_REPAIR_THRESHOLD = 3
                 while True:
                     await _emit(progress, store, task_id, "log",
                                 {"msg": (
@@ -1361,6 +1371,103 @@ async def run_cascade(
                                 f"{integration.feedback or ''}"
                             ).strip(),
                         })
+
+                    # Track per-check consecutive failures + capture
+                    # failure output for the repair-LLM. Same shape as
+                    # sub-task loop.
+                    int_failing_now = {r.name for r in int_check_results if not r.ok}
+                    for r in int_check_results:
+                        if not r.ok:
+                            int_check_last_output[r.name] = (r.output or "")[:4000]
+                    for name in list(int_check_consec_fails.keys()):
+                        if name not in int_failing_now:
+                            int_check_consec_fails.pop(name, None)
+                    for name in int_failing_now:
+                        int_check_consec_fails[name] = (
+                            int_check_consec_fails.get(name, 0) + 1
+                        )
+
+                    # Self-heal: if any plan-level check has failed
+                    # INT_REPAIR_THRESHOLD times in a row AND we haven't
+                    # repaired it yet, ask the planner-LLM to rewrite
+                    # the check command. Most common case: top-level
+                    # plan check still references an old package-name
+                    # that the sub-tasks have since renamed.
+                    int_repair_candidates = [
+                        n for n, c in int_check_consec_fails.items()
+                        if c >= INT_REPAIR_THRESHOLD
+                        and n not in int_check_repaired_once
+                    ]
+                    if int_repair_candidates:
+                        from .check_repair import repair_quality_check
+                        for cand_name in int_repair_candidates:
+                            int_check_repaired_once.add(cand_name)
+                            broken = next(
+                                (c for c in plan.quality_checks
+                                 if c.name == cand_name),
+                                None,
+                            )
+                            if broken is None:
+                                continue
+                            await _log(
+                                store, task_id, "warn",
+                                f"integration check '{cand_name}' failed "
+                                f"{int_check_consec_fails.get(cand_name, '?')}× "
+                                "in a row — attempting self-heal",
+                            )
+                            await _emit(
+                                progress, store, task_id, "log",
+                                {"msg": f"🔧 Repariere Integration-Check `{cand_name}`…"
+                                        if lang == "de"
+                                        else f"🔧 Repairing integration-check `{cand_name}`…"},
+                            )
+                            repaired = await repair_quality_check(
+                                broken,
+                                failure_output=int_check_last_output.get(cand_name, ""),
+                                consecutive_failures=int_check_consec_fails.get(cand_name, 0),
+                                sub_plan_summary=plan.summary,
+                                lang=lang,
+                                s=s,
+                            )
+                            if repaired is None:
+                                await _log(
+                                    store, task_id, "warn",
+                                    f"integration check '{cand_name}': self-heal "
+                                    "declined — will fall through to repair-implementer",
+                                )
+                                continue
+                            new_qc = []
+                            for c in plan.quality_checks:
+                                new_qc.append(repaired if c.name == cand_name else c)
+                            plan = plan.model_copy(update={"quality_checks": new_qc})
+                            # Persist repaired plan to iter-0 so a /resume
+                            # picks it up (same trick as sub-task self-heal).
+                            try:
+                                await store.record_iteration(
+                                    task_id, 0,
+                                    implementer_output=plan.model_dump_json(),
+                                )
+                            except Exception:
+                                pass
+                            int_check_consec_fails.pop(cand_name, None)
+                            int_check_last_output.pop(cand_name, None)
+                            await _log(
+                                store, task_id, "info",
+                                f"integration check '{cand_name}' repaired: "
+                                f"{broken.command!r} → {repaired.command!r}",
+                            )
+                            await _emit(
+                                progress, store, task_id, "log",
+                                {"msg": f"✅ Integration-Check `{cand_name}` "
+                                        f"repariert: `{repaired.command[:120]}`"
+                                        if lang == "de"
+                                        else f"✅ Integration-check `{cand_name}` "
+                                             f"repaired: `{repaired.command[:120]}`"},
+                            )
+                        # After repair, jump straight to next loop iter so
+                        # the repaired check is re-run before the next
+                        # integration-review evaluates.
+                        continue
                     if integration.passed:
                         # P1.4: cumulative final quality gate across the
                         # whole plan. A later sub-task may have broken an
