@@ -214,7 +214,12 @@ class HealingMonitor:
                 )
                 self._last_alert_emitted_at = now
         elif idle > self.config.stuck_threshold_s:
-            log.info(
+            # DEBUG-level: this fires every tick during a normal long LLM call
+            # (planner ~2min, implementer ~3min). At INFO-level it produces
+            # 12+ identical lines per minute — pure log noise. The actual
+            # alert at stuck_alert_threshold_s above is still WARNING and
+            # also surfaced to the user via the progress stream.
+            log.debug(
                 "healing: %.0fs idle (last=%s, iter=%d) — still within tolerance",
                 idle, self.state.last_event, self.state.iteration,
             )

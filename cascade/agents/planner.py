@@ -157,7 +157,21 @@ suite if a focused command suffices. If the task is purely descriptive
 (write a markdown file), use file-existence + content checks. Avoid checks
 that depend on network. If no objective check is meaningful (rare), return
 an empty list — but think first whether `wc`, `grep`, `test -f`, `python -c
-'import …'`, `python -m py_compile` could verify the work.""".strip()
+'import …'`, `python -m py_compile` could verify the work.
+
+CRITICAL — quality_checks MUST be scoped to the workspace source tree, NEVER
+to environment / build / cache directories:
+  - `grep -r` and `find` MUST include exclusions:
+    `--exclude-dir={.venv,venv,__pycache__,node_modules,dist,build,.git}`
+  - Better yet: target a specific source dir, e.g.
+    `grep -rn "bad-pattern" src/` instead of `grep -rn "bad-pattern" .`
+  - `python -c "import foo"` MUST be invoked with the workspace cwd as
+    PYTHONPATH if foo lives in a sub-package: `PYTHONPATH=. python3 -c "..."`
+    or use `python3 -m py_compile path/to/foo.py` which doesn't depend on
+    sys.path.
+  - When in doubt, restrict to the most-specific path you've named in
+    `files_to_touch`. A check that scans the whole workspace will pick up
+    third-party code from `.venv/` and the implementer can NEVER fix that.""".strip()
 
 
 # German-language Planner prompt. Schema field names stay English (the
@@ -257,6 +271,19 @@ Vermeide Checks die Netzwerk brauchen. Wenn kein objektiver Check sinnvoll ist
 (selten), gib leere Liste zurück — aber überlege erst ob `wc`, `grep`,
 `test -f`, `python3 -c 'import …'`, `python3 -m py_compile` die Arbeit
 verifizieren könnten.
+
+KRITISCH — quality_checks MÜSSEN auf den Workspace-Source-Tree skopt sein,
+NIEMALS auf Environment- / Build- / Cache-Verzeichnisse:
+  - `grep -r` und `find` MÜSSEN ausschließen:
+    `--exclude-dir={.venv,venv,__pycache__,node_modules,dist,build,.git}`
+  - Besser: ziele auf eine konkrete Source-Dir, z.B.
+    `grep -rn "schlechtes-muster" src/` statt `grep -rn "schlechtes-muster" .`
+  - `python3 -c "import foo"` MUSS mit `PYTHONPATH=.` aufgerufen werden wenn
+    foo in einem Sub-Package wohnt, oder besser `python3 -m py_compile
+    path/to/foo.py` was nicht von sys.path abhängt.
+  - Im Zweifel: Skopf den Check auf die in `files_to_touch` genannten Pfade.
+    Ein Check der den ganzen Workspace scannt findet Drittanbieter-Code in
+    `.venv/` — und der Implementer kann das NIEMALS fixen.
 
 Antworte AUSSCHLIESSLICH mit einem JSON-Objekt nach dem Schema — keine
 Markdown-Fences, keine Prosa.""".strip()
