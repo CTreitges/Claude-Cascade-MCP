@@ -155,6 +155,7 @@ _STRINGS: dict[str, dict[Lang, str]] = {
             "/queue — was läuft gerade\n"
             "/wait — wer wartet gerade auf Rate-Limit / Session-Window + ETA\n"
             "/cancel `[id]` — laufenden Task abbrechen\n"
+            "/stop `[id]` — Task stoppen (ohne id: ALLE laufenden Tasks)\n"
             "/abort — alles laufende killen\n"
             "/dryrun `<task>` — nur planen, nichts ausführen (billig)\n\n"
 
@@ -248,6 +249,7 @@ _STRINGS: dict[str, dict[Lang, str]] = {
             "/queue — what's running\n"
             "/wait — who is waiting on a rate-limit / session window + ETA\n"
             "/cancel `[id]` — cancel a running task\n"
+            "/stop `[id]` — stop a task (no id: ALL running tasks)\n"
             "/abort — kill everything running\n"
             "/dryrun `<task>` — plan only, don't execute (cheap)\n\n"
 

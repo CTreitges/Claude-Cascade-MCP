@@ -70,6 +70,7 @@ from .handlers.tasks import (
     cmd_queue,
     cmd_resume,
     cmd_status,
+    cmd_stop,
 )
 from .lifecycle import post_init, post_shutdown
 
@@ -122,6 +123,7 @@ def main() -> None:
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("logs", cmd_logs))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
+    app.add_handler(CommandHandler("stop", cmd_stop))
     app.add_handler(CommandHandler("history", cmd_history))
     app.add_handler(CommandHandler("resume", cmd_resume))
     app.add_handler(CommandHandler("again", cmd_again))

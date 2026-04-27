@@ -100,6 +100,54 @@ async def cmd_cancel(update: Update, ctx) -> None:
     )
 
 
+async def cmd_stop(update: Update, ctx) -> None:
+    """`/stop` — kill ALL in-flight tasks across all chats.
+    `/stop <id>` — kill the named task (same effect as /cancel <id>).
+
+    Aimed at the user-explicit infinite-retry policy: with_retry can wait
+    up to 7 days for a flaky upstream, so the user needs a panic-button
+    that doesn't require knowing the chat-id mapping."""
+    if not await owner_only(update, ctx):
+        return
+    lang = lang_for(update)
+    args = ctx.args or []
+
+    if args:
+        target_id = args[0]
+        for _cid, (tid, _t, ev) in list(INFLIGHT.items()):
+            if tid == target_id:
+                ev.set()
+                await update.effective_message.reply_text(
+                    t("cancel_sent", lang=lang, task_id=target_id),
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                return
+        await update.effective_message.reply_text(
+            t("cancel_not_running", lang=lang, task_id=target_id),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if not INFLIGHT:
+        await update.effective_message.reply_text(t("no_inflight", lang=lang))
+        return
+
+    stopped: list[str] = []
+    for _cid, (tid, _t, ev) in list(INFLIGHT.items()):
+        ev.set()
+        stopped.append(tid)
+
+    head = (
+        f"🚫 Stop-Signal an {len(stopped)} laufende Task(s) gesendet:"
+        if lang == "de"
+        else f"🚫 Stop signal sent to {len(stopped)} running task(s):"
+    )
+    body = "\n".join(f"  • `{tid}`" for tid in stopped)
+    await update.effective_message.reply_text(
+        f"{head}\n{body}", parse_mode=ParseMode.MARKDOWN
+    )
+
+
 async def cmd_history(update: Update, ctx) -> None:
     if not await owner_only(update, ctx):
         return

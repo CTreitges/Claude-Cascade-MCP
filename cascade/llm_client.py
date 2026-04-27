@@ -222,16 +222,17 @@ async def _ollama_chat(
             options=options,
         )
     except Exception as e:
-        from .rate_limit import RateLimitError, is_rate_limit, parse_retry_after
+        from .rate_limit import RateLimitError, parse_retry_after
         msg = str(e)
-        # The ollama python client raises ollama.ResponseError for HTTP errors
-        # — its repr typically contains the status code + body.
-        if is_rate_limit(msg) or getattr(e, "status_code", None) in (429, 529, 503):
-            raise RateLimitError(
-                f"Ollama Cloud rate-limit / overloaded: {msg[:300]}",
-                retry_after=parse_retry_after(msg),
-            ) from e
-        raise LLMClientError(f"Ollama Cloud call failed: {e}") from e
+        # User-explicit policy (2026-04-27): ALL Ollama Cloud errors are
+        # treated as transient — 5xx, 4xx, network drops, timeouts, weird
+        # client errors. with_retry waits and tries again until the service
+        # recovers. Permanent config errors (no API key) are raised earlier
+        # and never reach this except.
+        raise RateLimitError(
+            f"Ollama Cloud error (will retry): {msg[:400]}",
+            retry_after=parse_retry_after(msg),
+        ) from e
 
     text = (resp.get("message") or {}).get("content", "")
     if not isinstance(text, str) or not text.strip():
@@ -265,7 +266,14 @@ async def _openai_compat_chat(
             response_format={"type": "json_object"},
         )
     except Exception as e:
-        raise LLMClientError(f"OpenAI-compatible call ({model}@{base_url}) failed: {e}") from e
+        from .rate_limit import RateLimitError, parse_retry_after
+        msg = str(e)
+        # User-explicit policy: all cloud-LLM errors retryable (see
+        # _ollama_cloud_chat). Permanent config errors are raised before this.
+        raise RateLimitError(
+            f"OpenAI-compatible call error (will retry) ({model}@{base_url}): {msg[:400]}",
+            retry_after=parse_retry_after(msg),
+        ) from e
 
     if not resp.choices:
         raise LLMClientError(f"OpenAI-compatible response had no choices: {resp!r}")

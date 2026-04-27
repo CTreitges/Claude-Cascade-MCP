@@ -143,21 +143,22 @@ async def with_retry(
     factory: Callable[[], Awaitable],
     *,
     max_total_wait_s: float = 7 * 86400,
-    min_backoff_s: float = 30.0,
-    max_backoff_s: float = 30 * 60,
+    min_backoff_s: float = 3600.0,
+    max_backoff_s: float = 3600.0,
     cancel_event: asyncio.Event | None = None,
     on_wait: Callable[[float, int, str], Awaitable[None]] | None = None,
     label: str = "llm",
 ):
-    """Run `factory()`. On RateLimitError: sleep the suggested duration (or
-    exponential backoff fallback) and retry. Stops when total wait exceeds
-    `max_total_wait_s` (re-raises the last RateLimitError) or when
-    cancel_event fires (raises asyncio.CancelledError).
+    """Run `factory()`. On RateLimitError: sleep and retry. Stops when total
+    wait exceeds `max_total_wait_s` (re-raises the last RateLimitError) or
+    when cancel_event fires (raises asyncio.CancelledError).
 
-    Default `max_total_wait_s` is 7 days so the cascade survives Claude's
-    weekly-usage cap automatically — the user explicitly wants the bot to
-    wait for the next session window rather than fail early. UX-facing
-    callers (triage) override this with a tighter budget (~3 min).
+    User-explicit policy (2026-04-27): default backoff is **1 hour fixed**
+    between retries for ALL Ollama / Claude API / cloud-LLM errors, with a
+    7-day total budget — i.e. the cascade keeps trying for up to a week
+    until the upstream service recovers. UX-facing callers (triage) override
+    these defaults with a tighter budget (10s backoff, 180s total) so the
+    chat doesn't freeze when a single triage call blips.
     """
     total_waited = 0.0
     attempt = 0
