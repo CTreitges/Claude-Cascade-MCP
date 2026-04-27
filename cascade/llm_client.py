@@ -232,15 +232,31 @@ async def _ollama_chat(
         )
     except Exception as e:
         from .rate_limit import RateLimitError, parse_retry_after
-        msg = str(e)
+        # Build a richer error fingerprint than just str(e). Ollama's
+        # ResponseError occasionally has empty str() but a populated
+        # status_code attribute — without status info, our short-
+        # backoff classifier in rate_limit.py can't tell a 500 from
+        # a real 429, so we'd default to a 1h wait. Mining type-name
+        # and status_code makes the message classifiable.
+        parts = []
+        type_name = type(e).__name__
+        if type_name and type_name != "Exception":
+            parts.append(type_name)
+        status = getattr(e, "status_code", None)
+        if status:
+            parts.append(f"status code: {status}")
+        body = str(e)
+        if body:
+            parts.append(body[:300])
+        diag = " — ".join(parts) if parts else f"{type_name} (no detail)"
         # User-explicit policy (2026-04-27): ALL Ollama Cloud errors are
         # treated as transient — 5xx, 4xx, network drops, timeouts, weird
         # client errors. with_retry waits and tries again until the service
         # recovers. Permanent config errors (no API key) are raised earlier
         # and never reach this except.
         raise RateLimitError(
-            f"Ollama Cloud error (will retry): {msg[:400]}",
-            retry_after=parse_retry_after(msg),
+            f"Ollama Cloud error (will retry): {diag}",
+            retry_after=parse_retry_after(diag),
         ) from e
 
     text = (resp.get("message") or {}).get("content", "")

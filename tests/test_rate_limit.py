@@ -35,7 +35,11 @@ def test_parse_retry_after_handles_known_phrasings():
     assert parse_retry_after("Try again in 30 minutes") == 1800
     assert parse_retry_after("retry-after: 60") == 60
     assert parse_retry_after("available in 4 hours") == 14400
-    assert parse_retry_after("nothing here") is None
+    # Short/uninformative messages now fall back to 10s short-backoff
+    # (the test ran "nothing here" which is <20 chars).
+    assert parse_retry_after("nothing here") == 10.0
+    # Longer non-rate-limit messages still return None.
+    assert parse_retry_after("file not found in some longer path /home/x/y") is None
     assert parse_retry_after(None) is None
 
 

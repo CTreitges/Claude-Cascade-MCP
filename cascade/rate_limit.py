@@ -132,15 +132,33 @@ _SHORT_BACKOFF_RX: list[re.Pattern] = [
 
 def is_short_backoff_signal(text_or_exc: object) -> bool:
     """True if the transient signal is one we expect to clear quickly
-    (10-30s) — SIGTERM/SIGKILL, network blip, plain timeout. Lets
-    callers shrink the backoff for those cases instead of treating
-    every transient as a 1-hour rate-limit wait."""
+    (10-30s) — SIGTERM/SIGKILL, network blip, plain timeout, generic
+    HTTP 5xx, OR a too-short error message that probably came from a
+    Python exception with no useful str() (those are almost always
+    transient blips that the wrapping code dropped detail on).
+    Lets callers shrink the backoff for those cases instead of
+    treating every unmatched transient as a 1-hour rate-limit wait."""
     if text_or_exc is None:
         return False
     text = text_or_exc if isinstance(text_or_exc, str) else str(text_or_exc)
     if not text:
         return False
-    return any(p.search(text) for p in _SHORT_BACKOFF_RX)
+    if any(p.search(text) for p in _SHORT_BACKOFF_RX):
+        return True
+    # Empty/very short error fingerprints — usually `Exception("")` or
+    # ResponseError with no message. Don't pretend these are weekly
+    # rate-limits; treat as transient. BUT: respect any text that
+    # carries an explicit long-wait signal — both the _RL_RX patterns
+    # (503/429/…) AND the _RESET_RX patterns ("resets in 2 hours") —
+    # those are real signals from the server.
+    short = len(text.strip()) < 20
+    if short:
+        if any(p.search(text) for p in _RL_RX):
+            return False
+        if any(rx.search(text) for rx, _ in _RESET_RX):
+            return False
+        return True
+    return False
 
 
 def parse_retry_after(text_or_exc: object) -> float | None:
