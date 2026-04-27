@@ -3,6 +3,185 @@
 All notable changes are listed here. Versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-04-27
+
+The "self-healing cascade" release. End-to-end live-driven hardening
+of the orchestration loop based on a full day of real production
+debugging on a representative multi-file Python refactor task. Headline
+change: the cascade can now reliably finish complex tasks without
+manual intervention — broken quality-checks self-repair, integration
+review runs its own quality-checks, planner replans see the FULL
+reviewer feedback (not a 300-byte truncation), and bot-restart
+artefacts retry in 10s instead of 1h. Default implementer is
+`kimi-k2.6` (April-2026 SWE-bench Verified leader at 80.2%).
+
+### Added
+
+#### Self-healing
+- **Quality-check self-heal** (`cascade/check_repair.py`) — when a
+  single check fails 3 iterations in a row, a focused planner-LLM call
+  rewrites the check command (most common: missing `--exclude-dir=.venv`,
+  wrong path scope, `python` vs `python3`). Each check gets one repair
+  attempt; on failure the cascade falls through to a regular sub-task
+  replan with a "drop the broken check" hint instead of hard-aborting.
+- **Self-heal persistence** — repaired checks land in the iter-0 plan
+  in DB so a `/resume` after a crash continues with the improved
+  version. RLM-tagged for cross-task learning.
+- **Integration-review self-heal** — the integration phase now mirrors
+  the sub-task self-heal: runs plan-level quality_checks during review
+  (was `check_results=None`), tracks per-check consecutive failures,
+  triggers `repair_quality_check()` at the threshold, persists the
+  repaired plan into iter-0.
+- **Sub-task hard-abort fallthrough** — when replan budget exhausts
+  and the same check still fails, the cascade hard-fails with a
+  precise "stuck-check" diagnosis naming the offending check; before
+  this the run looped to `cascade_max_iterations`.
+- **Implementer-stuck auto-replan** — `HealingMonitor` flags 3 identical
+  implementer-output hashes; the cascade reads the flag and forces
+  a replan instead of letting the same diff echo forever.
+- **Empty-ops loop-breaker** — 2 consecutive `ops=[]` outputs from
+  the implementer trigger a forced replan instead of waiting for the
+  reviewer-feedback stagnation detector.
+
+#### Reliability + retry
+- **Infinite retry on cloud-LLM errors** — ALL Ollama / Claude API /
+  OpenAI-compatible errors now retry indefinitely (1h fixed backoff,
+  7-day budget) until upstream recovers. Permanent config errors
+  (no API key, missing CLI binary) still raise immediately.
+- **Short-backoff for fast-recovery signals** — `exited 143/137`
+  (SIGTERM/SIGKILL), connection-reset/refused, timeouts, HTTP
+  500/502/504 → 10–30 s clamp instead of the 1h floor. A bot-restart
+  artefact no longer wedges the cascade for an hour.
+- **Empty-error fingerprint** — `_ollama_cloud_chat` now mines
+  `type(e).__name__` + `status_code` from exceptions whose `str(e)`
+  is empty, so the short-backoff classifier can match them.
+- **JSON-repair pass for planner + reviewer** — same trick the
+  implementer had for months: on parse failure, ask the same model to
+  fix its own broken output with `temperature=0.0` and a schema-aware
+  repair prompt. Saves the run from a single-blip JSON corruption.
+- **30-min implementer/agent HTTP timeout** (was 600s) — kimi-k2.6
+  with xhigh effort on big plugin refactors needs the headroom.
+- **`/cancel`-keyboard on hard-stuck** — when no progress event has
+  fired for 5 minutes the bot surfaces an inline-keyboard
+  `✋ Abbrechen / ⏳ Weiter warten` so the user doesn't have to type
+  `/cancel <id>` to break out of a wedged retry-sleep.
+
+#### Plan / replan quality
+- **Planner prompt explicitly forbids `.venv` greps** — the most
+  common broken-check class. Now the prompt mandates
+  `--exclude-dir={.venv,venv,__pycache__,node_modules,dist,build,.git}`
+  on every `grep`/`find`, and `python3 -m py_compile` over `python -c
+  "import …"` for sub-package imports.
+- **Multi-plan voting on REPLANS** (was: only initial plan) — when
+  `cascade_multiplan_enabled=True`, replans now run two competing
+  planner calls and pick the better one via Sonnet. Sub-task replan
+  is exactly where the second opinion helps most.
+- **Full reviewer feedback in replan prompt** — was 300-char-truncated
+  per iteration, now 4 kB for the latest iter (older iters stay at
+  300 chars as context). The planner now sees the reviewer's full
+  fix-list instead of just the symptom-summary.
+- **Severity-aware replan trigger** — `review.severity == "high"`
+  bumps `consecutive_failures` to the replan threshold immediately,
+  skipping the normal "wait for 2 fails" period.
+- **Plan validation at entry** — empty plans (all of direct_ops,
+  subtasks, steps, files_to_touch, acceptance_criteria empty) get
+  one retry; if still empty the run fails before workspace setup.
+
+#### Reviewer rigor
+- **Explicit per-criterion verification** — `ReviewResult` now carries
+  both `passing_criteria` and `failing_criteria`. The reviewer prompt
+  mandates the two lists together cover every entry of
+  `plan.acceptance_criteria` — no silent skipping. Vibes-pass and
+  vibes-fail are gone.
+
+#### Feedback-driven context
+- **Reviewer-named files auto-included** — a new helper
+  `_extract_paths_from_feedback()` regex-extracts file paths from
+  reviewer text (e.g. `tests/test_smoke.py`) and adds them to the
+  next implementer call's `EXISTING FILE CONTENTS`. Persists across
+  replan boundaries so the first post-replan iter still gets the
+  context it needs.
+
+#### Final quality gate
+- **Re-run plan.quality_checks before stamping `done`** — caught the
+  rare case where a later sub-task or integration-repair broke an
+  earlier sub-task's invariant. Failing gate flips status to `failed`
+  with the offending check names in the summary.
+
+#### Watchdog + UX
+- **`hard_stuck` ProgressEvent** — `HealingMonitor` emits this after
+  300 s of NO progress event (was: only logged a warning at 180 s).
+  Bot renders an inline keyboard so the user can decide to abort
+  rather than wait silently for a 1h retry-sleep.
+- **`/cancel <id>` works for orphan tasks** — sweeps DB-running tasks
+  even when the in-process `INFLIGHT` slot was overwritten by a newer
+  task in the same chat. New `TASK_REGISTRY` keyed by task-id.
+- **`/abort` mirrors `/cancel` for ALL tasks** — including a DB-sweep
+  for orphan running/queued/interrupted rows from previous bot crashes.
+- **Cancel-intent guard** — "abbrechen" / "abort the task" / `/cancel`
+  / `/abort` are now caught BEFORE the triage LLM. Was: the LLM
+  routed them as a new cascade ("cancel task X" → triage thinks it's
+  a coding job → infinite meta-loop). Pre-LLM regex skips that path.
+- **Live-switch tip on wait-for-session** — the hard_stuck keyboard
+  message now includes `/cancel <id>` → `/models` → `/resume <id>` so
+  the user can swap implementer mid-run without remembering the dance.
+
+#### Logging + observability
+- **`ITER_TIMING` per sub-task iter** — one INFO log line per iter
+  end with task / iter / subtask / total_s / ops / failed_ops /
+  checks_pass / reviewer_pass. Sortable.
+- **`RUN_SUMMARY` JSON-line per terminal** — emits at every done /
+  failed / cancelled return. `journalctl … | grep RUN_SUMMARY | jq`
+  pipes one row per run for cross-run analysis. Fields: status, iters,
+  duration, replans, integration-repairs, self-heal-repairs,
+  files_changed, plan_summary, sub_tasks, plan_checks.
+- **Healing log demoted to DEBUG** — "still within tolerance" was
+  spamming 12+ INFO lines per minute during normal long LLM calls.
+  The actual stuck-alert at 180 s is still WARNING + user-visible.
+
+#### Defaults
+- **Default implementer model: `kimi-k2.6`** (was `qwen3-coder:480b`)
+  — top of SWE-bench Verified April 2026 at 80.2 %, near-doubled
+  tool-calling reliability vs k2.5. Both available on Ollama Cloud,
+  same API path.
+- **Configurable wait-cap** — new `cascade_max_wait_s` setting (default
+  still 7 days). Triage explicitly overrides to 180 s so chat stays
+  responsive even when an LLM upstream is flapping.
+- **Workspace disk-quota** — new `cascade_workspace_max_bytes` (default
+  1 GB). Aborts the run if the implementer goes runaway-write before
+  the disk fills.
+- **systemd `TimeoutStopSec=180` + `KillMode=mixed`** — 90 s default
+  was killing the bot mid-cascade with SIGKILL; now `post_shutdown`
+  has a fair window to mark running tasks as `interrupted`.
+
+#### Op validation
+- **Pre-apply rejection for empty `content=""` writes**, duplicate
+  writes to the same path in one batch, and no-op edits where
+  `find == replace`. Implementer can no longer silently "succeed" with
+  garbage that the reviewer then has to reject.
+
+### Fixed
+- Reviewer JSON corruption no longer crashes the run (JSON-repair pass).
+- `INFLIGHT[chat]` overwrite race fixed via `TASK_REGISTRY[task_id]`.
+- `/stop` was removed; `/cancel <id>` and `/abort` cover all use cases.
+- `_healing_progress` no longer resets the idle timer on its own emits
+  (`hard_stuck` was triggering itself in a loop).
+- `cascade.core` `r.detail` → `r.output` typo on `CheckResult`
+  (introduced and fixed same day).
+
+### Tests
+- 457 / 457 green (was 444 in 0.2.0). New coverage for: short-backoff
+  patterns, op-validation rejections, plan validation, empty-ops
+  loop-breaker, final quality gate, self-heal-repair persistence,
+  implementer-stuck auto-replan.
+
+### Migration
+- No breaking config changes. Existing `.env` continues to work; new
+  settings (`cascade_max_wait_s`, `cascade_workspace_max_bytes`) have
+  sensible defaults. The default implementer model swap from
+  `qwen3-coder:480b` to `kimi-k2.6` only takes effect for tasks
+  created AFTER upgrade — existing tasks keep their snapshotted model.
+
 ## [0.2.0] — 2026-04-26
 
 This is the "qualitative bot" release — the cascade now persists

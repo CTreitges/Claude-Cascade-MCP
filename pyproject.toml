@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cascade-bot-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "Multi-agent Plan→Implement→Review loop with MCP + Telegram interfaces."
 readme = "README.md"
 requires-python = ">=3.11"

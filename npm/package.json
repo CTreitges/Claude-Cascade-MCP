@@ -1,6 +1,6 @@
 {
   "name": "cascade-bot-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "npx wrapper that launches the Cascade-Bot MCP server (Python). Multi-agent Plan→Implement→Review loop for Claude Code.",
   "license": "MIT",
   "author": "Cascade-Bot Contributors",
