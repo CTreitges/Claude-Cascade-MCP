@@ -375,10 +375,11 @@ async def call_planner(
 ) -> Plan:
     s = s or settings()
     system = PLANNER_SYSTEM_DE if lang == "de" else PLANNER_SYSTEM_EN
+    user_prompt = _build_prompt(
+        task, recall_context, repo_candidates_block, replan_feedback, external_context,
+    )
     raw = await agent_chat(
-        prompt=_build_prompt(
-            task, recall_context, repo_candidates_block, replan_feedback, external_context,
-        ),
+        prompt=user_prompt,
         model=s.cascade_planner_model,
         system_prompt=system,
         attachments=attachments,
@@ -387,5 +388,32 @@ async def call_planner(
         temperature=temperature,
         s=s,
     )
-    data = parse_json_payload(raw)
-    return Plan.model_validate(data)
+    try:
+        data = parse_json_payload(raw)
+        return Plan.model_validate(data)
+    except Exception as e:
+        # JSON-repair pass — same trick implementer + reviewer use. The
+        # planner can produce broken JSON on a flaky LLM call (truncated
+        # output, extra prose, missing comma); without this the run fails
+        # before the workspace is even resolved.
+        repair_prompt = (
+            "Your previous response was not valid JSON or did not match the "
+            "required Plan schema. Reply with ONLY the corrected JSON "
+            "object — no prose, no markdown fences.\n\n"
+            f"Original error: {str(e)[:600]}\n\n"
+            f"Original response (broken):\n{(raw or '')[:8000]}"
+        )
+        repaired = await agent_chat(
+            prompt=repair_prompt,
+            model=s.cascade_planner_model,
+            system_prompt=(
+                "You repair broken JSON outputs from a planning agent. "
+                "Return ONLY a valid JSON object matching the requested schema."
+            ),
+            output_json=True,
+            effort=s.cascade_planner_effort or None,
+            temperature=0.0,
+            s=s,
+        )
+        data = parse_json_payload(repaired)
+        return Plan.model_validate(data)

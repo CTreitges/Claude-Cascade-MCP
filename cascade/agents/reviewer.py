@@ -205,8 +205,9 @@ async def call_reviewer(
 ) -> ReviewResult:
     s = s or settings()
     system = REVIEWER_SYSTEM_DE if lang == "de" else REVIEWER_SYSTEM_EN
+    prompt = _build_prompt(plan, diff, check_results, external_context, task=task)
     raw = await agent_chat(
-        prompt=_build_prompt(plan, diff, check_results, external_context, task=task),
+        prompt=prompt,
         model=s.cascade_reviewer_model,
         system_prompt=system,
         output_json=True,
@@ -214,5 +215,36 @@ async def call_reviewer(
         temperature=temperature,
         s=s,
     )
-    data = parse_json_payload(raw)
-    return ReviewResult.model_validate(data)
+    try:
+        data = parse_json_payload(raw)
+        return ReviewResult.model_validate(data)
+    except Exception as e:
+        # JSON-repair pass: same trick the implementer uses (see
+        # cascade/agents/implementer.py:147). Reviewer LLMs occasionally
+        # return malformed JSON or extra prose; without this the cascade
+        # crashes mid-run with `Expecting ',' delimiter` and loses all
+        # progress. Cheap retry with a deterministic temperature usually
+        # produces clean JSON on the second attempt.
+        repair_prompt = (
+            "Your previous response was not valid JSON or did not match the "
+            "required ReviewResult schema. Reply with ONLY the corrected "
+            "JSON object, no prose, no markdown fences. The schema is:\n"
+            "  {\"pass\": bool, \"feedback\": str, "
+            "\"failing_criteria\": [str], \"severity\": \"low\"|\"medium\"|\"high\"}\n\n"
+            f"Original error: {str(e)[:600]}\n\n"
+            f"Original response (broken):\n{(raw or '')[:6000]}"
+        )
+        repaired = await agent_chat(
+            prompt=repair_prompt,
+            model=s.cascade_reviewer_model,
+            system_prompt=(
+                "You repair broken JSON outputs from a code-review agent. "
+                "Return ONLY a valid JSON object matching the requested schema."
+            ),
+            output_json=True,
+            effort=s.cascade_reviewer_effort or None,
+            temperature=0.0,
+            s=s,
+        )
+        data = parse_json_payload(repaired)
+        return ReviewResult.model_validate(data)
