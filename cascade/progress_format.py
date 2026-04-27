@@ -167,6 +167,7 @@ def format_milestone(event: str, payload: dict, lang: str = "de") -> list[str]:
         secs = int(payload.get("seconds") or 0)
         attempt = int(payload.get("attempt") or 1)
         reason = (payload.get("reason") or "").strip()[:120]
+        task_id = payload.get("task_id") or ""
         when = _fmt_wait_duration(secs)
         head = (
             f"⏳ Waiting for next session window (attempt {attempt}) — {when}"
@@ -176,6 +177,13 @@ def format_milestone(event: str, payload: dict, lang: str = "de") -> list[str]:
         out = [head]
         if reason:
             out.append(f"   ↳ {reason}")
+        if task_id:
+            tip = (
+                f"   💡 Live-switch provider: /stop {task_id} → /models → /resume {task_id}"
+                if lang != "de"
+                else f"   💡 Live-Switch Provider: /stop {task_id} → /models → /resume {task_id}"
+            )
+            out.append(tip)
         return out
 
     if event == "skill_suggested":

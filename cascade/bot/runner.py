@@ -364,11 +364,15 @@ async def run_task_for_chat(
                 head = (
                     f"⏳ *Warte auf nächste Session* (Versuch {attempt}) — {when}\n"
                     f"_{reason[:200]}_\n"
-                    f"_(Cascade läuft automatisch weiter sobald wieder verfügbar.)_"
+                    f"_(Cascade läuft automatisch weiter sobald wieder verfügbar.)_\n"
+                    f"💡 _Live-Switch zu anderem Provider:_ "
+                    f"`/stop {task_id}` → `/models` → `/resume {task_id}`"
                 ) if lang == "de" else (
                     f"⏳ *Waiting for next session window* (attempt {attempt}) — {when}\n"
                     f"_{reason[:200]}_\n"
-                    f"_(Cascade resumes automatically when available.)_"
+                    f"_(Cascade resumes automatically when available.)_\n"
+                    f"💡 _Live-switch to another provider:_ "
+                    f"`/stop {task_id}` → `/models` → `/resume {task_id}`"
                 )
                 try:
                     await msg.reply_text(head, parse_mode=_PM.MARKDOWN)

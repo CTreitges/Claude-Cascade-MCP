@@ -278,6 +278,10 @@ async def run_cascade(
                         "seconds": int(seconds),
                         "attempt": attempt,
                         "reason": reason[:200],
+                        # task_id duplicated in payload so the shared
+                        # progress_format.py can render the live-switch tip
+                        # (`/stop <id>` → `/models` → `/resume <id>`).
+                        "task_id": task_id,
                     },
                 )
             except Exception:

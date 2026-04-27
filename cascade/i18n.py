@@ -169,6 +169,14 @@ _STRINGS: dict[str, dict[Lang, str]] = {
             "*zusätzlicher Hinweis* in den Resume-Run geschickt. _Beispiel:_ "
             "`/resume bdce20… nutze python3 statt python und füge tests hinzu`\n\n"
 
+            "*▸ Live-Switch während Cascade hängt (Provider-Wechsel)*\n"
+            "Cloud-LLM-Errors werden bis zu 7 Tage lang im 1h-Takt automatisch "
+            "retried. Wenn du in der Zwischenzeit auf einen anderen Provider "
+            "(z.B. von Ollama Cloud auf Claude) wechseln willst:\n"
+            "1. `/stop <id>` — bricht den Wait-Sleep sofort ab\n"
+            "2. `/models` — neuen Worker auswählen\n"
+            "3. `/resume <id>` — macht ab letzter Iteration mit neuem Model weiter\n\n"
+
             "*▸ Skills (wiederverwendbare Templates)*\n"
             "/skills — Liste (werden nach erfolgreichen Runs vorgeschlagen)\n"
             "/run `<name>` — Skill ausführen\n"
@@ -262,6 +270,14 @@ _STRINGS: dict[str, dict[Lang, str]] = {
             "/resume `<id>` `<extra-text>` — same as /resume, but the extra text is "
             "appended as an *additional hint* into the resumed run. _Example:_ "
             "`/resume bdce20… use python3 instead of python and add tests`\n\n"
+
+            "*▸ Live-switch while a cascade is waiting (provider swap)*\n"
+            "Cloud-LLM errors are retried automatically every 1h for up to 7 "
+            "days. If you'd rather swap to a different provider (e.g. Ollama "
+            "Cloud → Claude) while it's stuck:\n"
+            "1. `/stop <id>` — breaks the wait-sleep immediately\n"
+            "2. `/models` — pick a different worker\n"
+            "3. `/resume <id>` — continues from the last iteration with the new model\n\n"
 
             "*▸ Skills (reusable templates)*\n"
             "/skills — list (auto-suggested after successful runs)\n"
