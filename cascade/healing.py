@@ -63,6 +63,11 @@ class HealingState:
     # the case where the implementer keeps producing the same diff (a
     # complement to reviewer-feedback stagnation in core.py).
     recent_impl_hashes: list[str] = field(default_factory=list)
+    # Set to True by the monitor when 3 consecutive implementer outputs
+    # have identical hashes. Read by the cascade loop to escalate into a
+    # forced replan instead of just logging — a stuck implementer that
+    # ignores reviewer feedback won't unstick on its own.
+    implementer_stuck: bool = False
 
     def mark_event(self, event: str) -> None:
         self.last_event = event
@@ -294,6 +299,11 @@ class HealingMonitor:
                 {"msg": msg, "kind": "implementer-stuck"},
             )
             self._last_impl_stuck_hash = hashes[-1]
+            # Flag the shared state so the cascade loop's next iter
+            # checkpoint reads it and forces a replan. Without this the
+            # implementer would just keep echoing the same diff forever
+            # (reviewer keeps rejecting, implementer keeps ignoring).
+            self.state.implementer_stuck = True
 
 
 async def _safe_emit(

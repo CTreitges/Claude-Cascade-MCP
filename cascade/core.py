@@ -247,7 +247,20 @@ async def run_cascade(
 
         async def _healing_progress(tid, event, payload):
             try:
-                healing_state.mark_event(event)
+                # P3.6 bugfix: don't update last_event_at on events the
+                # healing monitor itself emitted. Otherwise hard_stuck
+                # never fires — every 180s stuck-alert resets the idle
+                # timer and the 300s threshold can't be reached. We
+                # *do* still record the log text so the diagnostic scan
+                # has the latest events.
+                kind = (payload or {}).get("kind") or ""
+                is_self_emit = (
+                    event == "log"
+                    and kind in ("stuck-alert", "implementer-stuck",
+                                 "permission-issue", "hard-stuck")
+                )
+                if not is_self_emit:
+                    healing_state.mark_event(event)
                 msg_text = payload.get("msg") or payload.get("feedback") or ""
                 if msg_text:
                     healing_state.mark_log_text(msg_text)
@@ -723,6 +736,27 @@ async def run_cascade(
                                 RuntimeError(quota_msg),
                                 progress,
                             )
+
+                    # P3.6: implementer-stuck → force replan. The healing
+                    # monitor flags `implementer_stuck=True` when 3
+                    # consecutive impl-outputs have identical hashes
+                    # (cascade/healing.py). Reading the flag here lets us
+                    # escalate to a planner replan immediately instead of
+                    # waiting for the regular consec-fail threshold —
+                    # which is moot anyway because identical outputs
+                    # produce identical reviewer feedback, locking the
+                    # loop.
+                    if healing_state.implementer_stuck and sub_replans < s.cascade_replan_max:
+                        await _log(
+                            store, task_id, "warn",
+                            "implementer-stuck flagged by healing — "
+                            "forcing sub-task replan",
+                        )
+                        sub_consec_fails = max(
+                            sub_consec_fails,
+                            s.cascade_replan_after_failures,
+                        )
+                        healing_state.implementer_stuck = False  # consumed
 
                     # P1.2: empty-ops loop-breaker. If the implementer
                     # produces no ops, count consecutive empties and force
@@ -1320,6 +1354,22 @@ async def run_cascade(
         for iter_n in range(start_iter, s.cascade_max_iterations + 1):
             await _check_cancel(cancel_event, store, task_id)
             await store.update_task(task_id, iteration=iter_n)
+
+            # P3.6: implementer-stuck escalation in no-decompose path.
+            # Same hook as the sub-task loop — healing flags it, we
+            # bump consecutive_failures to force the next replan
+            # trigger. Without this a stuck implementer just produces
+            # the same diff each iter until cascade_max_iterations.
+            if healing_state.implementer_stuck and replans_done < s.cascade_replan_max:
+                await _log(
+                    store, task_id, "warn",
+                    "implementer-stuck flagged by healing — forcing replan",
+                )
+                consecutive_failures = max(
+                    consecutive_failures,
+                    s.cascade_replan_after_failures,
+                )
+                healing_state.implementer_stuck = False  # consumed
 
             # Implementer
             await _emit(progress, store, task_id, "implementing", {"iteration": iter_n})
