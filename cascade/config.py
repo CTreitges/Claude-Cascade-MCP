@@ -56,7 +56,13 @@ class Settings(BaseSettings):
         return v
 
     cascade_implementer_provider: Literal["ollama", "openai_compatible"] = "ollama"
-    cascade_implementer_model: str = "qwen3-coder:480b"
+    # 2026-04-27: Switched default from qwen3-coder:480b to kimi-k2.6.
+    # SWE-bench Verified ranking April 2026 puts kimi-k2.6 at 80.2%
+    # (top open-source spot), with near-doubled tool-calling reliability
+    # vs k2.5 — exactly the JSON-strict implementer profile cascade needs.
+    # Both available via Ollama Cloud, same API path. Override per-run via
+    # /models in the bot or pass implementer_model= to run_cascade.
+    cascade_implementer_model: str = "kimi-k2.6"
     cascade_implementer_tools: Literal["fileops", "mcp"] = "fileops"
 
     ollama_cloud_host: str = "https://ollama.com"

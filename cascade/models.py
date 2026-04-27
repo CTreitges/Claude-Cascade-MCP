@@ -8,8 +8,10 @@ from __future__ import annotations
 
 # tag → (display name, provider)
 # Curated user-facing list shown in the Telegram /models menu.
-# qwen3-coder:480b stays as the runtime default (CASCADE_IMPLEMENTER_MODEL),
-# but the menu only offers the four explicitly requested cloud options.
+# kimi-k2.6 is the runtime default (CASCADE_IMPLEMENTER_MODEL) since
+# 2026-04-27 — see config.py:60 for rationale (SWE-bench leadership +
+# top-tier tool-calling reliability). The menu still lists multiple
+# cloud options so the user can switch with /models.
 IMPLEMENTER_MODELS: dict[str, tuple[str, str]] = {
     "qwen3-coder:480b":  ("Qwen3 Coder 480B", "ollama"),
     "qwen3.5:397b":      ("Qwen 3.5 397B (neueste Gen)", "ollama"),

@@ -60,8 +60,8 @@ async def run_cascade_tool(
         result dict. False returns immediately with a task_id for later
         polling via cascade_status / cascade_logs.
       timeout_s: only used when sync=True.
-      implementer_model: override the runtime default (qwen3-coder:480b);
-        e.g. "kimi-k2.6", "glm-5.1", "minimax-m2.7", "deepseek-v3.2".
+      implementer_model: override the runtime default (kimi-k2.6);
+        e.g. "qwen3-coder:480b", "glm-5.1", "minimax-m2.7", "deepseek-v3.2".
       planner_model / reviewer_model: override the Claude models for this run.
       planner_effort / reviewer_effort: claude-cli --effort flag.
       replan_max: how often the planner may rewrite the plan if the loop

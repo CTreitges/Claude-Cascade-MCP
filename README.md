@@ -39,9 +39,9 @@ shipped as an MCP server so you can call it from inside Claude Code with
 
 2. **Implementer on a separate cloud LLM** — code generation is the
    high-volume step, so it's offloaded to a cheap/fast model
-   (Ollama Cloud's qwen3-coder:480b by default; DeepSeek / GLM / MiniMax
-   / Kimi via OpenAI-compatible endpoints; or even Claude itself if you
-   prefer).
+   (Ollama Cloud's kimi-k2.6 by default — top of SWE-bench Verified
+   April 2026 at 80.2%; qwen3-coder:480b / DeepSeek / GLM / MiniMax via
+   Ollama or OpenAI-compatible endpoints; or Claude itself if you prefer).
 
 3. **Long-running tasks survive your IDE** — Claude Code sessions are
    ephemeral; cascade tasks live in SQLite under `~/cascade-bot-mcp/store/`
@@ -86,7 +86,7 @@ DE/EN     +shortcut     strict      (Claude)
 | Worker          | Default Model       | Configurable via |
 |-----------------|---------------------|------------------|
 | Planner         | `claude-opus-4-7`   | `/models`, `.env` |
-| Implementer     | `qwen3-coder:480b` (Ollama Cloud) | `/models` (4 cloud picks) |
+| Implementer     | `kimi-k2.6` (Ollama Cloud) | `/models` (4 cloud picks) |
 | Reviewer        | `claude-sonnet-4-6` | `/models`, `.env` |
 | Triage          | `claude-sonnet-4-6` | `.env` |
 | Skill suggester | uses planner model  | (auto) |
