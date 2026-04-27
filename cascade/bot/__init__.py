@@ -71,6 +71,7 @@ from .handlers.tasks import (
     cmd_resume,
     cmd_status,
     cmd_stop,
+    on_wait_callback,
 )
 from .lifecycle import post_init, post_shutdown
 
@@ -170,6 +171,7 @@ def main() -> None:
     from .handlers.resume_kbd import on_resume_callback
     app.add_handler(CallbackQueryHandler(on_resume_callback, pattern=r"^resume:"))
     app.add_handler(CallbackQueryHandler(on_lifecycle_callback, pattern=r"^life:"))
+    app.add_handler(CallbackQueryHandler(on_wait_callback, pattern=r"^wait:"))
 
     # Free-form messages
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, on_voice))

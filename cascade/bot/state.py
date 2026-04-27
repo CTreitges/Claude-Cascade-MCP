@@ -6,7 +6,15 @@ from __future__ import annotations
 import asyncio
 
 # chat_id → (task_id, asyncio.Task, cancel_event)
+# Holds the *most recent* task per chat. INFLIGHT[chat] is overwritten when
+# the same chat starts a second task — so use TASK_REGISTRY for /stop-by-id.
 INFLIGHT: dict[int, tuple[str, asyncio.Task, asyncio.Event]] = {}
+
+# task_id → cancel_event. Populated alongside INFLIGHT, but every task gets
+# its own entry — guarantees /stop <id> can find a task that started while
+# another task in the same chat was still running. Cleared in run_task_for_chat
+# when the task finishes (any terminal status).
+TASK_REGISTRY: dict[str, asyncio.Event] = {}
 
 # chat_id → "de" | "en"; falls back to settings.cascade_bot_lang
 LANG_OVERRIDE: dict[int, str] = {}

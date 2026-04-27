@@ -534,6 +534,14 @@ async def run_cascade(
                 sub_ok = False
                 sub_consec_fails = 0
                 sub_replans = 0
+                # Track per-check-name consecutive failures. Catches the
+                # broken-check death-loop where the SAME check (e.g.
+                # `no_bare_except_core` greppin .venv/) keeps failing
+                # regardless of what the implementer writes — the implementer
+                # cannot satisfy a check it cannot influence, so we have to
+                # surface this as a hard abort rather than burn iterations.
+                check_consec_fails: dict[str, int] = {}
+                BROKEN_CHECK_THRESHOLD = 4  # iterations
                 for sub_iter in range(1, sub_iter_budget + 1):
                     cumulative_iter += 1
                     await _check_cancel(cancel_event, store, task_id)
@@ -640,6 +648,51 @@ async def run_cascade(
                             if review.feedback else op_failure_block
                         )
                     sub_consec_fails += 1
+
+                    # Track which check names failed THIS iteration; bump or
+                    # reset their consecutive-fail counters.
+                    failing_now = {r.name for r in check_results if not r.ok}
+                    for name in list(check_consec_fails.keys()):
+                        if name not in failing_now:
+                            check_consec_fails.pop(name, None)
+                    for name in failing_now:
+                        check_consec_fails[name] = check_consec_fails.get(name, 0) + 1
+                    # Hard-abort if a single check has been failing this long
+                    # AND we've already done at least one replan to give the
+                    # planner a chance to fix it. If the new plan still can't
+                    # produce a passing run on this check, the check itself
+                    # is broken (or unsatisfiable) — keep iterating burns
+                    # tokens forever.
+                    broken_checks = [
+                        name for name, n in check_consec_fails.items()
+                        if n >= BROKEN_CHECK_THRESHOLD
+                    ]
+                    if broken_checks and sub_replans >= 1:
+                        names_str = ", ".join(f"`{n}`" for n in broken_checks)
+                        msg_de = (
+                            f"❌ Stuck-Check abort: {names_str} ist {BROKEN_CHECK_THRESHOLD}× "
+                            f"hintereinander gefailed (auch nach {sub_replans} Replan). "
+                            "Vermutlich strukturell defekt (greppt falsche Pfade, "
+                            "unrealistische Acceptance-Bedingung, …). "
+                            "Sub-Task wird abgebrochen damit der Run nicht weiter "
+                            "Tokens verbrennt."
+                        )
+                        msg_en = (
+                            f"❌ Stuck-check abort: {names_str} failed "
+                            f"{BROKEN_CHECK_THRESHOLD} iterations in a row even "
+                            f"after {sub_replans} replan(s). Likely structurally "
+                            "broken (greps the wrong paths, unsatisfiable "
+                            "acceptance rule, …). Sub-task aborted to stop "
+                            "burning tokens."
+                        )
+                        explain = msg_de if lang == "de" else msg_en
+                        await _log(store, task_id, "error", explain)
+                        await _emit(progress, store, task_id, "log",
+                                    {"msg": explain})
+                        all_subs_ok = False
+                        last_sub_feedback = explain
+                        sub_ok = False
+                        break  # exits the sub_iter loop; supervisor wraps up below
 
                     # Sub-task local replan: if the sub-task has been stuck
                     # for `cascade_replan_after_failures` rounds AND we still

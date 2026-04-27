@@ -239,6 +239,59 @@ async def triage(
     if not s.cascade_triage_enabled:
         return TriageResult(is_task=True, task=message, reply=None, via="disabled")
 
+    # ── Pre-LLM cancel-intent guard ────────────────────────────────
+    # If the user is unambiguously asking to cancel / stop / abort the
+    # current run, NEVER route that as a new cascade. We saw this fail
+    # spectacularly on 2026-04-27: "bitte abbrechen" got classified as
+    # a coding task, the planner spawned a meta-cascade trying to call
+    # cascade_cancel from inside the implementer loop, and that meta-task
+    # itself looped forever. Route to chat-mode with a short instructional
+    # reply that points the user at the actual /stop command.
+    msg_l = (message or "").strip().lower()
+    # Short clear cancel intent: no ambiguity in these phrases.
+    cancel_phrases_de = (
+        "abbrechen", "abbruch", "stop alle", "stop alles", "stoppe alle",
+        "stoppe alles", "stoppe den task", "task abbrechen",
+        "cascade abbrechen", "task stoppen", "alles stoppen",
+        "cancel alle", "cancel alles", "alles abbrechen",
+    )
+    cancel_phrases_en = (
+        "abort the task", "abort task", "abort cascade", "stop everything",
+        "stop the task", "stop all tasks", "cancel all tasks",
+        "kill the task", "kill the cascade", "kill everything",
+    )
+    short_cancel_words = ("/stop", "/cancel", "/abort")
+    if (
+        any(p in msg_l for p in cancel_phrases_de + cancel_phrases_en)
+        or any(msg_l.startswith(w) for w in short_cancel_words)
+        or msg_l.strip() in ("abbrechen", "stoppen", "stop", "cancel", "abort")
+    ):
+        if lang == "de":
+            reply = (
+                "🚫 Wenn du einen laufenden Cascade-Task stoppen willst:\n"
+                "• `/stop <id>` — eine bestimmte Task abbrechen "
+                "(IDs siehst du in `/history` oder `/queue`).\n"
+                "• `/stop` ohne ID — ALLE laufenden Tasks abbrechen.\n\n"
+                "_Ich starte deshalb keinen neuen Cascade-Task — das wäre "
+                "ein Meta-Endlos-Loop._"
+            )
+        else:
+            reply = (
+                "🚫 To stop a running cascade task:\n"
+                "• `/stop <id>` — cancel a specific task "
+                "(IDs are in `/history` or `/queue`).\n"
+                "• `/stop` with no id — cancel ALL running tasks.\n\n"
+                "_I'm not spawning a new cascade for this — that would be a "
+                "meta-infinite-loop._"
+            )
+        log.info(
+            "triage: cancel-intent guard fired — replying with /stop hint, "
+            "no LLM call. msg=%r", message[:80],
+        )
+        return TriageResult(
+            is_task=False, task=None, reply=reply, via="cancel_intent_guard",
+        )
+
     triage_model = model or s.cascade_triage_model
     started = time.monotonic()
     log.debug(

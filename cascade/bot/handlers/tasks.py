@@ -102,50 +102,204 @@ async def cmd_cancel(update: Update, ctx) -> None:
 
 async def cmd_stop(update: Update, ctx) -> None:
     """`/stop` — kill ALL in-flight tasks across all chats.
-    `/stop <id>` — kill the named task (same effect as /cancel <id>).
+    `/stop <id>` — kill the named task.
 
-    Aimed at the user-explicit infinite-retry policy: with_retry can wait
-    up to 7 days for a flaky upstream, so the user needs a panic-button
-    that doesn't require knowing the chat-id mapping."""
+    Sources of in-flight knowledge consulted, in priority order:
+      1. TASK_REGISTRY (every spawned cascade — even if INFLIGHT[chat]
+         got overwritten by a newer task in the same chat).
+      2. INFLIGHT (current-task-per-chat, used for legacy code paths).
+      3. DB tasks-table (mark `running` → `cancelled` even if no
+         in-process cancel_event is reachable; covers tasks orphaned
+         after a bot crash/restart, and our own cascade subprocesses).
+    """
     if not await owner_only(update, ctx):
         return
     lang = lang_for(update)
+    store: Store = ctx.application.bot_data["store"]
     args = ctx.args or []
+    from ..state import TASK_REGISTRY
 
     if args:
         target_id = args[0]
-        for _cid, (tid, _t, ev) in list(INFLIGHT.items()):
-            if tid == target_id:
-                ev.set()
-                await update.effective_message.reply_text(
-                    t("cancel_sent", lang=lang, task_id=target_id),
-                    parse_mode=ParseMode.MARKDOWN,
+        # 1) Try TASK_REGISTRY first — the most reliable source.
+        ev = TASK_REGISTRY.get(target_id)
+        if ev is None:
+            # 2) Fall back to INFLIGHT scan (handles edge cases where the
+            #    REGISTRY entry was lost — e.g. crash during register).
+            for _cid, (tid, _t, ev2) in list(INFLIGHT.items()):
+                if tid == target_id:
+                    ev = ev2
+                    break
+
+        if ev is not None:
+            ev.set()
+            # Also stamp the DB so a watching subprocess / re-spawn won't
+            # try to keep going if it's not us holding the loop.
+            try:
+                await store.update_task(
+                    target_id, status="cancelled",
+                    result_summary="cancelled via /stop", completed=True,
                 )
-                return
+            except Exception:
+                pass
+            await update.effective_message.reply_text(
+                t("cancel_sent", lang=lang, task_id=target_id),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        # 3) Not in our process — but maybe still marked running in DB
+        #    (orphan from a previous bot run that died unsafely). Mark
+        #    cancelled in DB so the user sees a clean state.
+        try:
+            db_task = await store.get_task(target_id)
+        except Exception:
+            db_task = None
+        if db_task and db_task.status in ("running", "queued", "interrupted"):
+            await store.update_task(
+                target_id, status="cancelled",
+                result_summary="cancelled via /stop (orphan — task wasn't "
+                               "running in current bot process)",
+                completed=True,
+            )
+            msg_de = (
+                f"🚫 Task `{target_id}` war kein aktiver In-Process-Task, "
+                f"wurde aber im DB-Status auf `cancelled` gesetzt."
+            )
+            msg_en = (
+                f"🚫 Task `{target_id}` wasn't active in this process, "
+                f"but its DB status is now `cancelled`."
+            )
+            await update.effective_message.reply_text(
+                msg_de if lang == "de" else msg_en,
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
         await update.effective_message.reply_text(
             t("cancel_not_running", lang=lang, task_id=target_id),
             parse_mode=ParseMode.MARKDOWN,
         )
         return
 
-    if not INFLIGHT:
+    # `/stop` (no args) — stop EVERYTHING in-process AND every DB-running task.
+    stopped: list[str] = []
+    for tid, ev in list(TASK_REGISTRY.items()):
+        ev.set()
+        stopped.append(tid)
+    for _cid, (tid, _t, ev) in list(INFLIGHT.items()):
+        if tid not in stopped:
+            ev.set()
+            stopped.append(tid)
+
+    # Sweep the DB for any task that's still marked running/queued/interrupted
+    # and mark it cancelled — covers orphans from previous bot crashes.
+    all_tasks = await store.list_tasks(limit=200)
+    db_active = [
+        t_ for t_ in all_tasks
+        if t_.status in ("running", "queued", "interrupted")
+    ]
+    db_cancelled: list[str] = []
+    for t_ in db_active:
+        try:
+            await store.update_task(
+                t_.id, status="cancelled",
+                result_summary="cancelled via /stop (bulk)", completed=True,
+            )
+            if t_.id not in stopped:
+                db_cancelled.append(t_.id)
+        except Exception:
+            pass
+
+    if not stopped and not db_cancelled:
         await update.effective_message.reply_text(t("no_inflight", lang=lang))
         return
 
-    stopped: list[str] = []
-    for _cid, (tid, _t, ev) in list(INFLIGHT.items()):
-        ev.set()
-        stopped.append(tid)
-
-    head = (
-        f"🚫 Stop-Signal an {len(stopped)} laufende Task(s) gesendet:"
-        if lang == "de"
-        else f"🚫 Stop signal sent to {len(stopped)} running task(s):"
-    )
-    body = "\n".join(f"  • `{tid}`" for tid in stopped)
+    parts = []
+    if stopped:
+        parts.append(
+            (f"🚫 Stop-Signal an {len(stopped)} laufende Task(s) gesendet:"
+             if lang == "de"
+             else f"🚫 Stop signal sent to {len(stopped)} running task(s):")
+        )
+        parts.extend(f"  • `{tid}`" for tid in stopped)
+    if db_cancelled:
+        parts.append(
+            (f"🗑 {len(db_cancelled)} Orphan-Task(s) im DB-Status auf `cancelled`:"
+             if lang == "de"
+             else f"🗑 {len(db_cancelled)} orphan task(s) marked `cancelled` in DB:")
+        )
+        parts.extend(f"  • `{tid}`" for tid in db_cancelled)
     await update.effective_message.reply_text(
-        f"{head}\n{body}", parse_mode=ParseMode.MARKDOWN
+        "\n".join(parts), parse_mode=ParseMode.MARKDOWN
     )
+
+
+async def on_wait_callback(update: Update, ctx) -> None:
+    """Inline-keyboard router for the wait-for-session prompt.
+    callback_data: `wait:<task_id>:abort` or `wait:<task_id>:keep`.
+
+    Ties the user's "abort vs keep waiting" choice into the task's
+    cancel_event held in TASK_REGISTRY. No new Telegram round-trip
+    is needed — flipping the event makes with_retry's _wait_with_cancel
+    return immediately and the cascade unwinds with a clean cancel.
+    """
+    if not await owner_only(update, ctx):
+        return
+    q = update.callback_query
+    if not q or not q.data:
+        return
+    parts = q.data.split(":", 2)
+    if len(parts) != 3 or parts[0] != "wait":
+        return
+    target_id, decision = parts[1], parts[2]
+    lang = lang_for(update)
+
+    from ..state import TASK_REGISTRY
+    ev = TASK_REGISTRY.get(target_id)
+
+    if decision == "keep":
+        await q.answer("OK — warte weiter" if lang == "de" else "OK — keep waiting")
+        try:
+            await q.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        return
+
+    # decision == "abort"
+    if ev is None:
+        await q.answer(
+            "Task läuft nicht mehr in diesem Prozess"
+            if lang == "de"
+            else "Task no longer running in this process"
+        )
+        try:
+            await q.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        return
+
+    ev.set()
+    store: Store = ctx.application.bot_data["store"]
+    try:
+        await store.update_task(
+            target_id, status="cancelled",
+            result_summary="cancelled by user via wait-keyboard",
+            completed=True,
+        )
+    except Exception:
+        pass
+    await q.answer("✋ Abbruch gesendet" if lang == "de" else "✋ Abort sent")
+    try:
+        await q.edit_message_reply_markup(reply_markup=None)
+        await q.edit_message_text(
+            f"✋ Task `{target_id}` wird abgebrochen."
+            if lang == "de"
+            else f"✋ Task `{target_id}` aborting.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    except Exception:
+        pass
 
 
 async def cmd_history(update: Update, ctx) -> None:

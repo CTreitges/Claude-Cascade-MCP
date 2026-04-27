@@ -374,8 +374,26 @@ async def run_task_for_chat(
                     f"💡 _Live-switch to another provider:_ "
                     f"`/stop {task_id}` → `/models` → `/resume {task_id}`"
                 )
+                # Inline keyboard so the user can decide right here: keep
+                # waiting OR abort the task. Without this the only way out
+                # was typing `/stop <id>` — slow when the rate-limit hits
+                # repeatedly. ev is set by the callback; the cascade's
+                # _wait_with_cancel sees it and aborts cleanly.
+                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                kb = InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "✋ Abbrechen" if lang == "de" else "✋ Abort",
+                        callback_data=f"wait:{task_id}:abort",
+                    ),
+                    InlineKeyboardButton(
+                        "⏳ Weiter warten" if lang == "de" else "⏳ Keep waiting",
+                        callback_data=f"wait:{task_id}:keep",
+                    ),
+                ]])
                 try:
-                    await msg.reply_text(head, parse_mode=_PM.MARKDOWN)
+                    await msg.reply_text(
+                        head, parse_mode=_PM.MARKDOWN, reply_markup=kb,
+                    )
                 except Exception:
                     pass
                 state["current_phase"] = (
@@ -504,12 +522,22 @@ async def run_task_for_chat(
     )
     task_obj = asyncio.create_task(coro)
 
+    # Mutable holder so register_when_known can publish the discovered
+    # task_id back to the outer scope (for cleanup in the finally block).
+    self_task_id: dict[str, str | None] = {"id": None}
+
     async def register_when_known() -> None:
         for _ in range(30):
             await asyncio.sleep(0.1)
             latest = await store.latest_task()
             if latest and latest.task_text == task_text:
                 INFLIGHT[chat.id] = (latest.id, task_obj, cancel)
+                # Also register by task-id so /stop <id> finds tasks even
+                # when a *newer* task in the same chat overwrites the
+                # INFLIGHT[chat] slot.
+                from .state import TASK_REGISTRY
+                TASK_REGISTRY[latest.id] = cancel
+                self_task_id["id"] = latest.id
                 if chat:
                     await store.set_chat_last_task(chat.id, latest.id)
                 return
@@ -606,7 +634,15 @@ async def run_task_for_chat(
             await hb_task
         except (asyncio.CancelledError, Exception):
             pass
-        INFLIGHT.pop(chat.id, None)
+        # Only pop INFLIGHT if it still points at *us* — a newer task in the
+        # same chat may have overwritten the slot, and we mustn't clobber it.
+        cur = INFLIGHT.get(chat.id)
+        if cur and cur[1] is task_obj:
+            INFLIGHT.pop(chat.id, None)
+        from .state import TASK_REGISTRY
+        own_id = self_task_id.get("id")
+        if own_id:
+            TASK_REGISTRY.pop(own_id, None)
 
     # Persist task outcome into RLM and the chat overview so the bot can
     # answer "what did you just build?" without re-running the cascade.
