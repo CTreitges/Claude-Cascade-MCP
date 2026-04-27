@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/cascade-bot-mcp.svg)](https://www.npmjs.com/package/cascade-bot-mcp)
 [![GitHub release](https://img.shields.io/github/v/release/CTreitges/cascade-bot-mcp)](https://github.com/CTreitges/cascade-bot-mcp/releases)
-[![Tests](https://img.shields.io/badge/tests-457%20passing-brightgreen)](https://github.com/CTreitges/cascade-bot-mcp)
+[![Tests](https://img.shields.io/badge/tests-457_passing-brightgreen)](https://github.com/CTreitges/cascade-bot-mcp)
 
 > A multi-agent **Plan → Implement → Review** loop you can talk to from
 > Telegram, Claude Code, or the CLI. **v0.3.0 — the "self-healing
