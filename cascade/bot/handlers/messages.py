@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -115,7 +116,16 @@ async def _on_text_impl(update, ctx, text, lang, s) -> None:
     # chat-memory block — they're complementary, not overlapping.
     rlm_block: str | None = None
     try:
-        rlm_block = await recall_context(text, limit=5)
+        # P2.2: hard 10s timeout. With a large RLM index BM25 search
+        # can stall the chat — the call has no internal budget. Falling
+        # through to memory_block=None costs us a bit of context, but
+        # the user gets a response. The triage path itself has its own
+        # tight retry budget so this can't compound.
+        rlm_block = await asyncio.wait_for(
+            recall_context(text, limit=5), timeout=10.0,
+        )
+    except asyncio.TimeoutError:
+        log.warning("rlm recall: 10s timeout — proceeding without RLM context")
     except Exception as e:
         log.debug("rlm recall failed: %s", e)
     if rlm_block:

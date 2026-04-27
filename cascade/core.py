@@ -676,6 +676,38 @@ async def run_cascade(
                                  "failed": len(failed_results),
                                  "subtask": subtask.name})
 
+                    # P2.4: workspace size quota. If the implementer
+                    # accidentally writes a 2GB log or recurses into a
+                    # generated-file blow-up, abort the whole run before
+                    # the disk fills.
+                    if s.cascade_workspace_max_bytes > 0:
+                        try:
+                            ws_size = ws.total_size_bytes()
+                        except Exception:
+                            ws_size = 0
+                        if ws_size > s.cascade_workspace_max_bytes:
+                            mb = ws_size / 1_048_576
+                            cap_mb = s.cascade_workspace_max_bytes / 1_048_576
+                            quota_msg = (
+                                f"Workspace-Quota überschritten: {mb:.1f} MB > "
+                                f"{cap_mb:.0f} MB Limit (cascade_workspace_max_bytes). "
+                                "Wahrscheinlich runaway-Write — Run wird "
+                                "abgebrochen damit die Disk nicht volläuft."
+                            ) if lang == "de" else (
+                                f"Workspace quota exceeded: {mb:.1f} MB > "
+                                f"{cap_mb:.0f} MB cap. Likely a runaway write — "
+                                "aborting run before the disk fills up."
+                            )
+                            await _log(store, task_id, "error", quota_msg)
+                            await _emit(progress, store, task_id, "log",
+                                        {"msg": quota_msg})
+                            return await _fail(
+                                store, task_id, ws,
+                                "workspace quota",
+                                RuntimeError(quota_msg),
+                                progress,
+                            )
+
                     # P1.2: empty-ops loop-breaker. If the implementer
                     # produces no ops, count consecutive empties and force
                     # a replan after 2 in a row — re-running the same

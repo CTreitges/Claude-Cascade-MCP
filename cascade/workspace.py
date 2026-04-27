@@ -348,6 +348,12 @@ class Workspace:
 
     def apply_ops(self, ops: list[FileOp | dict]) -> list[OpResult]:
         results: list[OpResult] = []
+        # P2.1: pre-filter obvious garbage before any disk write happens.
+        # Without this the implementer can "succeed" with junk: empty
+        # writes, no-op edits where find==replace, duplicate writes
+        # to the same path. The reviewer then has nothing meaningful to
+        # judge and the loop creeps forward without real progress.
+        seen_write_paths: set[str] = set()
         for raw in ops:
             op = raw if isinstance(raw, FileOp) else FileOp.model_validate(raw)
             try:
@@ -363,6 +369,23 @@ class Workspace:
                 if op.op == "write":
                     if op.content is None:
                         raise WorkspaceError("write requires `content`")
+                    # P2.1: empty write is almost never legitimate.
+                    # The implementer occasionally emits content="" when
+                    # confused — we'd silently truncate the file.
+                    if op.content == "":
+                        raise WorkspaceError(
+                            "refusing empty write — explicit content="
+                            " required (use op=delete to remove a file)"
+                        )
+                    # P2.1: duplicate write of the same path in the same
+                    # batch — last-wins is confusing and usually a sign
+                    # the implementer second-guessed itself.
+                    if op.path in seen_write_paths:
+                        raise WorkspaceError(
+                            f"duplicate write to {op.path!r} in same batch — "
+                            "consolidate into a single op"
+                        )
+                    seen_write_paths.add(op.path)
                     self._validate_content(op.path, op.content)
                     p = self._safe_path(op.path)
                     p.parent.mkdir(parents=True, exist_ok=True)
@@ -381,6 +404,14 @@ class Workspace:
                         p.write_text(op.content, encoding="utf-8")
                         results.append(OpResult("edit", op.path, True, "overwrite"))
                     else:
+                        # P2.1: no-op edit (find == replace) wastes a slot
+                        # without changing anything. Reject so the
+                        # implementer has to pick a real change.
+                        if op.find == op.replace:
+                            raise WorkspaceError(
+                                "no-op edit: find == replace "
+                                f"(in {op.path}) — pick a real change"
+                            )
                         text = p.read_text(encoding="utf-8")
                         count = text.count(op.find)
                         if count == 0:
@@ -529,6 +560,25 @@ class Workspace:
     def list_files(self) -> list[str]:
         out = self._git(["ls-files"]).stdout
         return [line for line in out.splitlines() if line]
+
+    def total_size_bytes(self, *, exclude_git: bool = True) -> int:
+        """Sum of all file sizes under the workspace root.
+
+        Used by the cascade quota check (P2.4): if the implementer goes
+        rogue and starts writing a 1GB log file, we catch it before the
+        disk fills. `exclude_git` skips the .git/ directory so its
+        objects don't dominate the count.
+        """
+        total = 0
+        for sub in self.root.rglob("*"):
+            if exclude_git and ".git" in sub.parts:
+                continue
+            try:
+                if sub.is_file():
+                    total += sub.stat().st_size
+            except OSError:
+                continue
+        return total
 
     def changed_paths(self) -> list[str]:
         """Return only the paths Cascade actually touched this run.

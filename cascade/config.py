@@ -131,6 +131,17 @@ class Settings(BaseSettings):
     cascade_auto_skill_suggest: bool = True
     cascade_skill_suggest_cooldown_s: int = 300
     cascade_workspace_retention_days: int = 7
+    # P2.3: hard cap on how long with_retry waits when an upstream LLM
+    # is failing. The default 7 days lets cascade-internal calls survive
+    # cloud outages, but for interactive runs that's overkill — the user
+    # would rather see a clean fail than a week-long "still trying" message.
+    # Override per run via run_cascade(..., max_wait_s=...).
+    cascade_max_wait_s: int = 7 * 86400
+    # P2.4: workspace size quota — abort iteration if cumulative diff
+    # plus tracked files exceed this. Catches runaway implementer
+    # writes (1GB log files, infinite loops in generated code) before
+    # they fill the disk. 0 disables.
+    cascade_workspace_max_bytes: int = 1_073_741_824  # 1 GB
     cascade_db_path: Path = Field(
         default_factory=lambda: Path.home() / "claude-cascade" / "store" / "cascade.db"
     )

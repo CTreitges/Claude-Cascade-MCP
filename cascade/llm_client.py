@@ -87,7 +87,11 @@ async def implementer_chat(
             )
         raise LLMClientError(f"Unknown implementer provider: {provider!r}")
 
-    return await with_retry(_call, label=f"implementer/{provider}")
+    return await with_retry(
+        _call,
+        label=f"implementer/{provider}",
+        max_total_wait_s=float(s.cascade_max_wait_s),
+    )
 
 
 async def _claude_chat(
@@ -146,8 +150,13 @@ async def agent_chat(
     from .rate_limit import with_retry
 
     retry_kwargs: dict = {}
-    if retry_max_total_wait_s is not None:
-        retry_kwargs["max_total_wait_s"] = retry_max_total_wait_s
+    # P2.3: default to settings.cascade_max_wait_s instead of with_retry's
+    # 7-day hardcode. Caller can override (triage uses 180s for UX).
+    retry_kwargs["max_total_wait_s"] = (
+        float(retry_max_total_wait_s)
+        if retry_max_total_wait_s is not None
+        else float(s.cascade_max_wait_s)
+    )
     if retry_min_backoff_s is not None:
         retry_kwargs["min_backoff_s"] = retry_min_backoff_s
     if retry_max_backoff_s is not None:
