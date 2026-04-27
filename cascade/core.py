@@ -682,6 +682,12 @@ async def run_cascade(
                 # "cannot proceed without read access" — feeding it more
                 # iterations only burns tokens. Force a replan instead.
                 empty_ops_consec = 0
+                # Paths the reviewer named in its most recent feedback —
+                # kept across replans so the first post-replan iter still
+                # sees the files the reviewer pointed at, even though
+                # sub_feedback gets cleared on replan. Only reset on
+                # sub_ok=True or sub-task switch.
+                last_review_paths: list[str] = []
                 for sub_iter in range(1, sub_iter_budget + 1):
                     cumulative_iter += 1
                     await _check_cancel(cancel_event, store, task_id)
@@ -698,6 +704,17 @@ async def run_cascade(
                     # plan.files_to_touch and candidate_context_files
                     # picked something else under its limit=12.
                     feedback_paths = _extract_paths_from_feedback(sub_feedback)
+                    # Merge with paths from the LAST reviewer feedback that
+                    # may have been carried over a replan boundary. Without
+                    # this the first post-replan iter loses the file-context
+                    # the reviewer just told us was wrong, because
+                    # sub_feedback gets reset to None.
+                    if last_review_paths:
+                        seen = set(feedback_paths)
+                        for p in last_review_paths:
+                            if p not in seen:
+                                feedback_paths.append(p)
+                                seen.add(p)
                     if feedback_paths:
                         existing_set = set(ctx_files)
                         added = []
@@ -890,6 +907,11 @@ async def run_cascade(
                             f"{op_failure_block}\n\nREVIEWER:\n{review.feedback}"
                             if review.feedback else op_failure_block
                         )
+                    # Snapshot the paths the reviewer named for the next
+                    # iter — survives replan reset of sub_feedback.
+                    fp = _extract_paths_from_feedback(review.feedback)
+                    if fp:
+                        last_review_paths = fp
                     sub_consec_fails += 1
 
                     # Severity-aware replan trigger: if the reviewer
