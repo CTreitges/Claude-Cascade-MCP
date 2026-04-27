@@ -8,6 +8,7 @@ import json
 import logging
 import re
 import sys
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -169,6 +170,11 @@ async def run_cascade(
     own_store = store is None
     if store is None:
         store = await Store.open(s.cascade_db_path)
+
+    # Wall-clock start for the RUN_SUMMARY log line emitted at every
+    # terminal path. Lets `journalctl … | grep RUN_SUMMARY | jq` show
+    # one comparable row per run for next-session forensics.
+    run_started_at = time.monotonic()
 
     # Carry resume state out of the conditional so later code can check
     # whether to restore a saved plan / pin a workspace / skip done sub-tasks.
@@ -595,6 +601,11 @@ async def run_cascade(
                     ws=ws, store=store, task_id=task_id,
                     source=source, progress=progress, s=s, lang=lang,
                 )
+                _emit_run_summary(
+                    task_id=task_id, status="done", iterations=1,
+                    started_at=run_started_at, plan=plan,
+                    files_changed=len(ws.changed_paths()),
+                )
                 # P3.3: reflect on trivial-shortcut runs too — they're the
                 # cheapest, but lessons about plan-recognition still help
                 # future similar tasks.
@@ -696,6 +707,7 @@ async def run_cascade(
                 # sub_ok=True or sub-task switch.
                 last_review_paths: list[str] = []
                 for sub_iter in range(1, sub_iter_budget + 1):
+                    iter_started_at = time.monotonic()
                     cumulative_iter += 1
                     await _check_cancel(cancel_event, store, task_id)
                     await store.update_task(task_id, iteration=cumulative_iter)
@@ -902,6 +914,18 @@ async def run_cascade(
                                 {"iteration": cumulative_iter, "pass": review.passed,
                                  "feedback": review.feedback, "subtask": subtask.name})
                     ws.commit_iteration(cumulative_iter)
+                    # ITER_TIMING log line — one per sub-task iter, easy to
+                    # grep with `journalctl … | grep ITER_TIMING | sort`.
+                    log.info(
+                        "ITER_TIMING task=%s iter=%d subtask=%s total_s=%.1f "
+                        "ops=%d failed_ops=%d checks_pass=%d/%d reviewer_pass=%s",
+                        task_id, cumulative_iter, subtask.name,
+                        time.monotonic() - iter_started_at,
+                        len(impl.ops), len(failed_results),
+                        sum(1 for r in check_results if r.ok),
+                        len(check_results),
+                        review.passed,
+                    )
                     if review.passed:
                         sub_ok = True
                         break
@@ -1526,6 +1550,13 @@ async def run_cascade(
                             ws=ws, store=store, task_id=task_id,
                             source=source, progress=progress, s=s, lang=lang,
                         )
+                        _emit_run_summary(
+                            task_id=task_id, status="done",
+                            iterations=cumulative_iter,
+                            started_at=run_started_at, plan=plan,
+                            repair_attempts=repair_attempts,
+                            files_changed=len(ws.changed_paths()),
+                        )
                         # P3.3: post-run reflection for the decompose path
                         # (was previously only in the no-decompose done-path).
                         await _try_reflect(
@@ -1836,6 +1867,11 @@ async def run_cascade(
                     task=task, plan=plan, iterations=iter_n,
                     final_diff=ws.diff_cumulative(max_bytes=50_000),
                     task_id=task_id, store=store, s=s, lang=lang,
+                )
+                _emit_run_summary(
+                    task_id=task_id, status="done", iterations=iter_n,
+                    started_at=run_started_at, plan=plan,
+                    files_changed=len(ws.changed_paths()),
                 )
 
                 # Auto-skill suggestion (best-effort, non-blocking on failure).
@@ -2212,6 +2248,50 @@ async def _check_cancel(ev: asyncio.Event, store: Store, task_id: str) -> None:
         await store.update_task(task_id, status="cancelled", completed=True)
         await store.log(task_id, "warn", "cancelled by request")
         raise asyncio.CancelledError()
+
+
+def _emit_run_summary(
+    *,
+    task_id: str,
+    status: str,
+    iterations: int,
+    started_at: float,
+    plan: Plan | None = None,
+    replans_done: int = 0,
+    repair_attempts: int = 0,
+    self_heal_repairs: int = 0,
+    files_changed: int = 0,
+    error: str | None = None,
+) -> None:
+    """Emit a single grep-friendly JSON-line at the end of every run.
+
+    Format:
+      RUN_SUMMARY {"task_id": "...", "status": "done", "iters": 12, ...}
+
+    Lets us run `journalctl … | grep RUN_SUMMARY | jq` to compare
+    runs side-by-side without trawling through events. The whole point
+    is that *next-session* analysis is fast: one line per run, one
+    schema, easy to diff.
+    """
+    duration = time.monotonic() - started_at
+    blob = {
+        "task_id": task_id,
+        "status": status,
+        "iters": iterations,
+        "duration_s": round(duration, 1),
+        "duration_min": round(duration / 60.0, 1),
+        "replans": replans_done,
+        "integration_repairs": repair_attempts,
+        "self_heal_repairs": self_heal_repairs,
+        "files_changed": files_changed,
+    }
+    if plan is not None:
+        blob["plan_summary"] = (plan.summary or "")[:120]
+        blob["sub_tasks"] = len(plan.subtasks or [])
+        blob["plan_checks"] = len(plan.quality_checks or [])
+    if error:
+        blob["error"] = error[:200]
+    log.info("RUN_SUMMARY %s", json.dumps(blob, ensure_ascii=False))
 
 
 async def _finalize_done_run(
