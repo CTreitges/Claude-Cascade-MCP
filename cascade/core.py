@@ -588,6 +588,13 @@ async def run_cascade(
                 await store.update_task(task_id, status="done",
                                         result_summary=summary, completed=True)
                 await _emit(progress, store, task_id, "done", {"summary": summary})
+                # Improvement: also fire rich finalize on trivial-shortcut.
+                await _finalize_done_run(
+                    task=task, plan=plan, iterations=1,
+                    review_severity=getattr(review, "severity", "low"),
+                    ws=ws, store=store, task_id=task_id,
+                    source=source, progress=progress, s=s, lang=lang,
+                )
                 # P3.3: reflect on trivial-shortcut runs too — they're the
                 # cheapest, but lessons about plan-recognition still help
                 # future similar tasks.
@@ -1511,6 +1518,14 @@ async def run_cascade(
                         await store.update_task(task_id, status="done",
                                                 result_summary=summary, completed=True)
                         await _emit(progress, store, task_id, "done", {"summary": summary})
+                        # Improvement #1+#2: rich finalize for decompose-done
+                        # — was previously only on the no-decompose path.
+                        await _finalize_done_run(
+                            task=task, plan=plan, iterations=cumulative_iter,
+                            review_severity=getattr(integration, "severity", "low"),
+                            ws=ws, store=store, task_id=task_id,
+                            source=source, progress=progress, s=s, lang=lang,
+                        )
                         # P3.3: post-run reflection for the decompose path
                         # (was previously only in the no-decompose done-path).
                         await _try_reflect(
@@ -2197,6 +2212,79 @@ async def _check_cancel(ev: asyncio.Event, store: Store, task_id: str) -> None:
         await store.update_task(task_id, status="cancelled", completed=True)
         await store.log(task_id, "warn", "cancelled by request")
         raise asyncio.CancelledError()
+
+
+async def _finalize_done_run(
+    *,
+    task: str,
+    plan: Plan,
+    iterations: int,
+    review_severity: str,
+    ws: Workspace,
+    store: Store,
+    task_id: str,
+    source: str,
+    progress: ProgressCallback,
+    s: Settings,
+    lang: str = "de",
+) -> None:
+    """Shared post-done bookkeeping for both decompose and no-decompose
+    success paths. Persists workspace stats into RLM, fires the
+    auto-skill-suggester. Best-effort — failures are logged, never raised.
+
+    The decompose-done path used to skip both of these (only the
+    no-decompose path had them inline). Result: skill suggestions and
+    rich "Task done" memories were lost for the most common task class.
+    """
+    try:
+        changed = ws.changed_paths()
+        await remember_finding(
+            f"Task done: '{task[:120]}' → workspace={ws.root}, "
+            f"iters={iterations}, files_changed={len(changed)}, "
+            f"plan_summary={(plan.summary or '')[:200]}",
+            category="finding",
+            importance="medium" if review_severity == "low" else "high",
+            tags=f"cascade-bot-mcp,task,{source}",
+            extra={"task_id": task_id, "review_severity": review_severity},
+        )
+    except Exception as e:
+        log.debug("remember_finding for done-task failed: %s", e)
+
+    if not s.cascade_auto_skill_suggest:
+        return
+    try:
+        recent = await store.list_tasks(limit=10, status="done")
+        recent = [t for t in recent if t.id != task_id][:8]
+        existing = await store.list_skills()
+        cur_task = await store.get_task(task_id)
+        last_sug_ts = max(
+            (sk.get("created_at") or 0 for sk in existing),
+            default=0,
+        )
+        sug = await maybe_suggest_skill(
+            current_task=cur_task,
+            recent_tasks=recent,
+            existing_skills=existing,
+            s=s,
+            cooldown_s=s.cascade_skill_suggest_cooldown_s,
+            last_suggested_at=last_sug_ts or None,
+        )
+        if sug:
+            await store.record_skill_suggestion(
+                task_id, sug.model_dump(), chat_id=None,
+            )
+            await _emit(
+                progress, store, task_id, "skill_suggested",
+                {
+                    "name": sug.name,
+                    "description": sug.description,
+                    "task_template": sug.task_template,
+                    "placeholders": sug.placeholders,
+                    "rationale": sug.rationale,
+                },
+            )
+    except Exception as e:
+        await _log(store, task_id, "warn", f"skill suggest failed: {e}")
 
 
 async def _try_reflect(
