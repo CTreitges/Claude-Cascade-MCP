@@ -891,6 +891,69 @@ async def run_cascade(
                             sub_plan = sub_plan.model_copy(
                                 update={"quality_checks": new_checks},
                             )
+
+                            # P3.5 — Persist the repaired check INTO the
+                            # top-level plan stored at iteration 0 of the
+                            # task row. Without this, a /resume after a
+                            # crash or bot-restart re-loads the ORIGINAL
+                            # broken check and the cascade has to rediscover
+                            # the same repair (live-observed in Run #2 of
+                            # task a4a98a — same self-heal happened twice).
+                            try:
+                                if plan.subtasks:
+                                    new_subtasks = []
+                                    for st in plan.subtasks:
+                                        if st.name == subtask.name:
+                                            st_new_checks = []
+                                            for c in st.quality_checks:
+                                                st_new_checks.append(
+                                                    repaired if c.name == cand_name else c
+                                                )
+                                            new_subtasks.append(st.model_copy(
+                                                update={"quality_checks": st_new_checks},
+                                            ))
+                                        else:
+                                            new_subtasks.append(st)
+                                    plan = plan.model_copy(update={"subtasks": new_subtasks})
+                                else:
+                                    new_top_checks = []
+                                    for c in plan.quality_checks:
+                                        new_top_checks.append(
+                                            repaired if c.name == cand_name else c
+                                        )
+                                    plan = plan.model_copy(update={"quality_checks": new_top_checks})
+                                await store.record_iteration(
+                                    task_id, 0, implementer_output=plan.model_dump_json(),
+                                )
+                            except Exception as persist_err:
+                                # Persistence is a nice-to-have — never let a
+                                # DB hiccup block the in-memory repair.
+                                log.debug(
+                                    "check-repair persist into iter-0 failed: %s",
+                                    persist_err,
+                                )
+
+                            # P3.5 — Cross-task learning: write the repair
+                            # into RLM so future tasks' planner-recall can
+                            # surface "we've seen this broken check shape
+                            # before" hints. Tagged so BM25 lookup matches
+                            # similar names + similar plan contexts.
+                            try:
+                                await remember_finding(
+                                    f"cascade check-repair: '{cand_name}' was broken with "
+                                    f"command `{broken.command[:300]}` — repaired to "
+                                    f"`{repaired.command[:300]}`.",
+                                    category="finding",
+                                    importance="medium",
+                                    tags=(
+                                        f"cascade-bot-mcp,check-repair,"
+                                        f"{cand_name.lower().replace(' ', '-')[:40]}"
+                                    ),
+                                    extra={"task_id": task_id, "subtask": subtask.name},
+                                )
+                            except Exception as rlm_err:
+                                log.debug("check-repair RLM-save failed: %s", rlm_err)
+
                             check_consec_fails.pop(cand_name, None)
                             check_last_output.pop(cand_name, None)
                             await _log(
@@ -900,10 +963,10 @@ async def run_cascade(
                             )
                             await _emit(
                                 progress, store, task_id, "log",
-                                {"msg": f"✅ Check `{cand_name}` repariert: "
+                                {"msg": f"✅ Check `{cand_name}` repariert + persistiert: "
                                         f"`{repaired.command[:120]}`"
                                         if lang == "de"
-                                        else f"✅ Check `{cand_name}` repaired: "
+                                        else f"✅ Check `{cand_name}` repaired + persisted: "
                                              f"`{repaired.command[:120]}`"},
                             )
 
@@ -1059,9 +1122,40 @@ async def run_cascade(
                                     repo=plan.repo,
                                 )
                             sub_plan = augment_quality_checks_for_python(sub_plan)
+
+                            # P3.5 — Persist the new sub-task plan into the
+                            # top-level plan stored at iter-0, so /resume
+                            # after a crash continues with the IMPROVED
+                            # plan instead of re-running the same
+                            # discovery from the original broken one.
+                            try:
+                                if plan.subtasks and replacement is not None:
+                                    new_subtasks = []
+                                    for st in plan.subtasks:
+                                        if st.name == subtask.name:
+                                            new_subtasks.append(replacement)
+                                        else:
+                                            new_subtasks.append(st)
+                                    plan = plan.model_copy(update={"subtasks": new_subtasks})
+                                    await store.record_iteration(
+                                        task_id, 0,
+                                        implementer_output=plan.model_dump_json(),
+                                    )
+                            except Exception as persist_err:
+                                log.debug(
+                                    "subtask-replan persist into iter-0 failed: %s",
+                                    persist_err,
+                                )
+
                             sub_replans += 1
                             sub_consec_fails = 0
                             sub_feedback = None
+                            # Also reset per-check counters: under the new
+                            # sub-plan, check names may differ; old counts
+                            # are stale.
+                            check_consec_fails.clear()
+                            check_repaired_once.clear()
+                            check_last_output.clear()
                             await _emit(progress, store, task_id, "replanned",
                                         {"summary": sub_plan.summary,
                                          "checks": [c.name for c in sub_plan.quality_checks],
@@ -1079,9 +1173,14 @@ async def run_cascade(
                 if not sub_ok:
                     all_subs_ok = False
                     last_sub_feedback = sub_feedback or ""
+                    # Continue to the next sub-task instead of abandoning
+                    # the whole supervisor. A later sub-task may still
+                    # succeed and add value — and the integration review
+                    # gets a richer diff to judge. The all_subs_ok=False
+                    # flag still prevents stamping the run as `done`.
                     await _log(store, task_id, "warn",
-                               f"subtask {subtask.name} failed after {sub_iter_budget} iter — stopping supervisor.")
-                    break
+                               f"subtask {subtask.name} failed after {sub_iter_budget} iter — "
+                               f"continuing with remaining sub-tasks.")
 
             # ---------- final integration review with auto-repair ----------
             # If the integration reviewer rejects, kick off a small fix-loop
