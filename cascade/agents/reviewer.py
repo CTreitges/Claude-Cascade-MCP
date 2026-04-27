@@ -14,6 +14,12 @@ class ReviewResult(BaseModel):
     passed: bool = Field(..., alias="pass")
     feedback: str = ""
     failing_criteria: list[str] = Field(default_factory=list)
+    # Acceptance criteria the reviewer explicitly verified as PASSING.
+    # When non-empty (the new behaviour) it gives us hard evidence the
+    # reviewer actually walked through each criterion instead of giving
+    # a vibes-based pass. Tracked alongside failing_criteria so the
+    # union should ≈ plan.acceptance_criteria for a thorough review.
+    passing_criteria: list[str] = Field(default_factory=list)
     severity: str = "low"  # low | medium | high — used for RLM decision
 
     model_config = {"populate_by_name": True}
@@ -27,8 +33,14 @@ Pass-rules — pass=true ONLY when ALL of these hold:
   1. Every Quality-Check returned ✅ (no ❌, no skipped). If any check
      failed, you MUST set pass=false even if the diff "looks right".
   2. Every entry in `acceptance_criteria` is demonstrably satisfied by
-     the diff or the check output. Mention each criterion you checked
-     in `feedback` (one short line per criterion).
+     the diff or the check output. You MUST split the criteria into
+     two lists in your reply:
+       - `passing_criteria`: criterion text that you VERIFIED passes
+       - `failing_criteria`: criterion text that fails (or you couldn't
+         verify from diff/checks)
+     A criterion you can't see evidence for goes into `failing_criteria`,
+     not `passing_criteria`. The two lists together should cover every
+     entry in plan.acceptance_criteria — no silent skipping.
   3. There is no obvious "TODO", "FIXME", or stub function left in the
      diff that should have been completed by this iteration.
   4. The implementer didn't bypass instructions (e.g. `# noqa` to silence
@@ -55,8 +67,14 @@ Pass-Regeln — pass=true NUR wenn ALLES davon zutrifft:
      nur ein Check fehlschlug, MUSST du pass=false setzen — auch wenn der
      Diff "richtig aussieht".
   2. Jeder Punkt aus `acceptance_criteria` ist durch Diff ODER Check-Output
-     nachweislich erfüllt. Nenne in `feedback` jedes geprüfte Kriterium
-     (eine knappe Zeile pro Kriterium).
+     nachweislich erfüllt. Du MUSST die Kriterien in zwei Listen aufteilen:
+       - `passing_criteria`: Kriterium-Text der NACHWEISLICH erfüllt ist
+       - `failing_criteria`: Kriterium-Text der fehlt oder nicht aus
+         Diff/Check belegbar ist
+     Ein Kriterium für das du keinen Beleg siehst gehört in
+     `failing_criteria`, nicht in `passing_criteria`. Die beiden Listen
+     zusammen müssen jeden Punkt von plan.acceptance_criteria abdecken
+     — kein stilles Überspringen.
   3. Im Diff steht kein offensichtliches "TODO", "FIXME" oder Stub-Funktion,
      die in dieser Iteration hätte fertiggestellt werden sollen.
   4. Der Implementer hat keine Anweisung umgangen (z.B. `# noqa` um einen
@@ -86,7 +104,8 @@ REVIEWER_SYSTEM = REVIEWER_SYSTEM_EN
 SCHEMA_HINT = """{
   "pass": true | false,
   "feedback": "<empty if pass=true; otherwise concrete instructions for the next iteration>",
-  "failing_criteria": ["criterion text", ...],
+  "passing_criteria": ["acceptance criterion text that VERIFIED passes", ...],
+  "failing_criteria": ["acceptance criterion text that fails or is unverifiable", ...],
   "severity": "low" | "medium" | "high"
 }"""
 
@@ -230,7 +249,8 @@ async def call_reviewer(
             "required ReviewResult schema. Reply with ONLY the corrected "
             "JSON object, no prose, no markdown fences. The schema is:\n"
             "  {\"pass\": bool, \"feedback\": str, "
-            "\"failing_criteria\": [str], \"severity\": \"low\"|\"medium\"|\"high\"}\n\n"
+            "\"passing_criteria\": [str], \"failing_criteria\": [str], "
+            "\"severity\": \"low\"|\"medium\"|\"high\"}\n\n"
             f"Original error: {str(e)[:600]}\n\n"
             f"Original response (broken):\n{(raw or '')[:6000]}"
         )
