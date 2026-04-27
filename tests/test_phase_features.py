@@ -159,7 +159,7 @@ async def test_p12_empty_ops_two_in_a_row_forces_replan(monkeypatch, store, s):
         ReviewResult(passed=True, feedback=""),
     ])
 
-    result = await run_cascade(task="t", store=store, s=s)
+    await run_cascade(task="t", store=store, s=s)
     # Planner should have been called at least twice (initial + forced replan).
     assert plan_calls["n"] >= 2, f"expected forced replan, planner_calls={plan_calls['n']}"
 
