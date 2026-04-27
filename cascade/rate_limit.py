@@ -106,8 +106,38 @@ def is_rate_limit(text_or_exc: object) -> bool:
     return any(p.search(text) for p in _RL_RX)
 
 
+# Classify *why* the call failed transiently. Some signatures should
+# not wait an hour — they're recoverable in seconds (process killed by
+# bot restart, network blip, timeout). Returning a small wait here
+# bypasses the global `min_backoff_s=3600` floor in with_retry's
+# clamp logic.
+_SHORT_BACKOFF_RX: list[re.Pattern] = [
+    re.compile(r"exited\s+143\b"),                # SIGTERM — bot restart, fix=relaunch
+    re.compile(r"exited\s+137\b"),                # SIGKILL / OOM
+    re.compile(r"connection\s+(reset|refused|aborted)", re.I),
+    re.compile(r"timed\s+out", re.I),
+    re.compile(r"timeout", re.I),
+    re.compile(r"network\s+is\s+unreachable", re.I),
+]
+
+
+def is_short_backoff_signal(text_or_exc: object) -> bool:
+    """True if the transient signal is one we expect to clear quickly
+    (10-30s) — SIGTERM/SIGKILL, network blip, plain timeout. Lets
+    callers shrink the backoff for those cases instead of treating
+    every transient as a 1-hour rate-limit wait."""
+    if text_or_exc is None:
+        return False
+    text = text_or_exc if isinstance(text_or_exc, str) else str(text_or_exc)
+    if not text:
+        return False
+    return any(p.search(text) for p in _SHORT_BACKOFF_RX)
+
+
 def parse_retry_after(text_or_exc: object) -> float | None:
-    """Best-effort: extract a suggested wait (seconds) from the error text."""
+    """Best-effort: extract a suggested wait (seconds) from the error text.
+    Falls back to a SHORT (10s) backoff for known process-kill / network-
+    blip signatures — those clear in seconds, not hours."""
     if text_or_exc is None:
         return None
     text = text_or_exc if isinstance(text_or_exc, str) else str(text_or_exc)
@@ -121,6 +151,12 @@ def parse_retry_after(text_or_exc: object) -> float | None:
             return float(extract(m))
         except Exception:
             continue
+    # No explicit retry-after — but for known short-backoff signatures
+    # (SIGTERM, SIGKILL, timeout, connection-reset) suggest 10s instead
+    # of letting min_backoff_s=3600 kick in. Bot-restart artifacts
+    # absolutely don't need an hour to clear.
+    if is_short_backoff_signal(text):
+        return 10.0
     return None
 
 
@@ -168,9 +204,20 @@ async def with_retry(
         except RateLimitError as e:
             attempt += 1
             wait = e.retry_after
+            # Short-backoff bypass: SIGTERM/SIGKILL/timeout/connection-reset
+            # signals clear in seconds, not hours. Detect these from the
+            # error text and skip the global min_backoff_s=3600 floor —
+            # clamp to a tight 10-30s window instead. Without this, every
+            # bot-restart artifact (claude -p exited 143) wedges the
+            # cascade for a full hour.
+            short = is_short_backoff_signal(str(e))
             if wait is None:
                 wait = min(max_backoff_s, min_backoff_s * (2 ** (attempt - 1)))
-            wait = max(min_backoff_s, min(wait, max_backoff_s))
+            if short:
+                # Tight clamp for fast-recovery signals.
+                wait = max(10.0, min(wait, 30.0))
+            else:
+                wait = max(min_backoff_s, min(wait, max_backoff_s))
             if total_waited + wait > max_total_wait_s:
                 log.error(
                     "%s: rate-limit retry budget exhausted after %.0fs total wait; giving up.",
