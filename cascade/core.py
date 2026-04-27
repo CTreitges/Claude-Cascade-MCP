@@ -254,10 +254,19 @@ async def run_cascade(
                 # *do* still record the log text so the diagnostic scan
                 # has the latest events.
                 kind = (payload or {}).get("kind") or ""
+                # Healing emits via two channels:
+                #  - event="log" with payload.kind in {stuck-alert,
+                #    implementer-stuck, permission-issue, hard-stuck}
+                #  - event="hard_stuck" directly (its own ProgressEvent
+                #    type, surfaced as a Telegram inline-keyboard)
+                # Both must be excluded from mark_event, otherwise the
+                # idle timer resets every healing tick and the next
+                # hard_stuck threshold can't be reached.
                 is_self_emit = (
-                    event == "log"
-                    and kind in ("stuck-alert", "implementer-stuck",
-                                 "permission-issue", "hard-stuck")
+                    event == "hard_stuck"
+                    or (event == "log"
+                        and kind in ("stuck-alert", "implementer-stuck",
+                                     "permission-issue", "hard-stuck"))
                 )
                 if not is_self_emit:
                     healing_state.mark_event(event)
