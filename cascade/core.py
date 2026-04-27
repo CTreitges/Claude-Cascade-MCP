@@ -1308,6 +1308,12 @@ async def run_cascade(
             full_diff = ws.diff_cumulative()
             if all_subs_ok:
                 repair_attempts = 0
+                # Mirror sub-task-loop self-heal state into the integration
+                # repair loop — without these the integration phase had no
+                # forward-progress guards (no severity escalation, no empty-
+                # ops break-out, no feedback-driven file inclusion).
+                integration_review_paths: list[str] = []
+                empty_ops_consec_int = 0
                 while True:
                     await _emit(progress, store, task_id, "log",
                                 {"msg": (
@@ -1315,14 +1321,46 @@ async def run_cascade(
                                     if repair_attempts else
                                     "integration-review across all sub-tasks"
                                 )})
+                    # Run plan-level quality_checks during integration too,
+                    # not just at the very-final gate. This gives the
+                    # reviewer hard objective signal alongside its own
+                    # subjective judgment of the diff.
+                    int_check_results = []
+                    for chk in plan.quality_checks:
+                        try:
+                            res = await ws.run_check(chk)
+                        except Exception as e:
+                            from .workspace import CheckResult as _CR
+                            res = _CR(chk.name, False, -3, f"runner-error: {e}", 0.0)
+                        int_check_results.append(res)
+                    if int_check_results:
+                        await _emit(
+                            progress, store, task_id, "checks_run",
+                            {"iteration": cumulative_iter,
+                             "checks": [{"name": r.name, "ok": r.ok} for r in int_check_results],
+                             "subtask": "integration-review"},
+                        )
                     try:
                         integration = await call_reviewer(
-                            plan, full_diff, check_results=None,
+                            plan, full_diff,
+                            check_results=int_check_results or None,
                             external_context=external_context,
                             temperature=reviewer_temperature, lang=lang, task=task, s=s,
                         )
                     except Exception as e:
                         return await _fail(store, task_id, ws, "integration review", e, progress)
+                    # Hard gate: any failed top-level check overrides a
+                    # `pass=true` from the reviewer (same rule the
+                    # sub-task loop applies for sub-checks).
+                    int_failing = [r.name for r in int_check_results if not r.ok]
+                    if int_failing and integration.passed:
+                        integration = integration.model_copy(update={
+                            "passed": False,
+                            "feedback": (
+                                f"Quality checks failed: {', '.join(int_failing)}. "
+                                f"{integration.feedback or ''}"
+                            ).strip(),
+                        })
                     if integration.passed:
                         # P1.4: cumulative final quality gate across the
                         # whole plan. A later sub-task may have broken an
@@ -1383,9 +1421,36 @@ async def run_cascade(
                         break
                     repair_attempts += 1
                     cumulative_iter += 1
+
+                    # Snapshot reviewer-named paths, persist across iters
+                    # so the implementer always sees the files the reviewer
+                    # just complained about.
+                    fp_int = _extract_paths_from_feedback(integration.feedback)
+                    if fp_int:
+                        integration_review_paths = fp_int
+
                     await _emit(progress, store, task_id, "implementing",
                                 {"iteration": cumulative_iter,
                                  "subtask": "integration-repair"})
+
+                    # Build the implementer's file-contents context with
+                    # feedback-driven inclusion (mirror of sub-task loop).
+                    int_ctx_files = ws.candidate_context_files(
+                        plan.files_to_touch, limit=12,
+                    ) if plan.files_to_touch else []
+                    int_existing = set(int_ctx_files)
+                    for p in integration_review_paths:
+                        if p in int_existing:
+                            continue
+                        full = ws.root / p
+                        if full.exists() and full.is_file():
+                            int_ctx_files.append(p)
+                            if len(int_ctx_files) >= 20:
+                                break
+                    int_file_contents = (
+                        ws.read_files(int_ctx_files) if int_ctx_files else {}
+                    )
+
                     try:
                         impl = await call_implementer(
                             plan, workspace_files=ws.list_files(),
@@ -1400,18 +1465,35 @@ async def run_cascade(
                             effort=s.cascade_implementer_effort or None,
                             temperature=implementer_temperature,
                             external_context=external_context, s=s,
-                            file_contents=ws.read_files(
-                                ws.candidate_context_files(plan.files_to_touch, limit=12)
-                            ) if plan.files_to_touch else {},
+                            file_contents=int_file_contents,
                         )
                     except Exception as e:
                         return await _fail(store, task_id, ws,
                                            f"integration repair iter {cumulative_iter}", e, progress)
                     op_results = ws.apply_ops(impl.ops)
+                    failed_ops_int = [r for r in op_results if not r.ok]
                     await _emit(progress, store, task_id, "implemented",
                                 {"iteration": cumulative_iter, "ops": len(impl.ops),
-                                 "failed": sum(1 for r in op_results if not r.ok),
+                                 "failed": len(failed_ops_int),
                                  "subtask": "integration-repair"})
+
+                    # Empty-ops loop-breaker for integration-repair: 2x
+                    # empty in a row → bail out of the repair loop early
+                    # (rather than burn INTEGRATION_REPAIR_MAX iters with
+                    # an implementer that's not making any change).
+                    if len(impl.ops) == 0:
+                        empty_ops_consec_int += 1
+                        if empty_ops_consec_int >= 2:
+                            await _log(
+                                store, task_id, "warn",
+                                f"integration-repair: implementer returned 0 "
+                                f"ops {empty_ops_consec_int}× in a row — "
+                                "stopping integration-repair loop early",
+                            )
+                            break
+                    else:
+                        empty_ops_consec_int = 0
+
                     ws.commit_iteration(cumulative_iter)
                     full_diff = ws.diff_cumulative()
                     # loop: integration reviewer sees the new state next round
