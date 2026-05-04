@@ -20,7 +20,16 @@ from cascade.orchestrator.result import (
     OrchestratorResult,
     SubTaskResult,
 )
+from cascade.orchestrator.replan import (
+    build_replan_feedback,
+    collect_replan_targets,
+    filter_subtasks_for_replan,
+    increment_max_turns_for_retry,
+    merge_replan_into_plan,
+    transitive_dependents,
+)
 from cascade.orchestrator.scheduler import Orchestrator
+from cascade.orchestrator.telegram_format import MultiplexedStreamFormatter
 from cascade.orchestrator.worktree import Worktree, WorktreeManager
 from cascade.orchestrator.runner import run_subtask_via_harness
 
@@ -31,4 +40,11 @@ __all__ = [
     "Worktree",
     "WorktreeManager",
     "run_subtask_via_harness",
+    "MultiplexedStreamFormatter",
+    "build_replan_feedback",
+    "collect_replan_targets",
+    "filter_subtasks_for_replan",
+    "increment_max_turns_for_retry",
+    "merge_replan_into_plan",
+    "transitive_dependents",
 ]

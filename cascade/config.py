@@ -137,6 +137,20 @@ class Settings(BaseSettings):
     cascade_auto_skill_suggest: bool = True
     cascade_skill_suggest_cooldown_s: int = 300
     cascade_workspace_retention_days: int = 7
+
+    # ── Plan v4 Feature-Flags (opt-in) ────────────────────────────────
+    # Wenn True: cascade.orchestrator (Phase E) nutzen statt der existing
+    # serial-sub-task-Schleife. Ermöglicht parallele Sub-Tasks via git
+    # worktrees + asyncio.gather mit Semaphore. Implementer läuft via
+    # ClaudeCodeHarness mit echtem Tool-Set, nicht JSON-only.
+    cascade_use_orchestrator: bool = False
+    # Max parallel laufende Sub-Tasks im Orchestrator. Anthropic-Rate-
+    # Limits und Token-Budget setzen praktische Grenzen.
+    cascade_max_parallel_subtasks: int = 3
+    # Wenn True: Reviewer läuft über cascade.harness (Phase G) mit
+    # Read/Glob/Grep/Bash, nicht über das alte agent_chat. Cross-Harness
+    # tauglich (Reviewer kann anderes Modell als Implementer haben).
+    cascade_reviewer_via_harness: bool = False
     # P2.3: hard cap on how long with_retry waits when an upstream LLM
     # is failing. The default 7 days lets cascade-internal calls survive
     # cloud outages, but for interactive runs that's overkill — the user
