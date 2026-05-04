@@ -762,6 +762,13 @@ _TOGGLE_KEYS: list[tuple[str, str, str, str]] = [
     ("websearch_enabled",   "cascade_websearch_enabled",   "🌐 Web-Suche (Brave)",       "🌐 Web search (Brave)"),
     ("auto_decompose",      "cascade_auto_decompose",      "🪓 Auto-Decompose (Sub-Tasks)", "🪓 Auto-decompose (sub-tasks)"),
     ("multiplan_enabled",   "cascade_multiplan_enabled",   "🗳️ Multi-Plan-Voting (2× Planner)", "🗳️ Multi-plan voting (2× planner)"),
+    # Plan v4 — Orchestrator + Cross-Harness opt-in
+    ("use_orchestrator",    "cascade_use_orchestrator",
+        "🎼 Orchestrator (parallele Sub-Tasks via worktrees)",
+        "🎼 Orchestrator (parallel sub-tasks via worktrees)"),
+    ("reviewer_via_harness","cascade_reviewer_via_harness",
+        "🔍 Reviewer mit Tool-Access (Read/Glob/Grep/Bash)",
+        "🔍 Reviewer with tool access (Read/Glob/Grep/Bash)"),
 ]
 
 
