@@ -19,6 +19,25 @@ async def post_init(application: Application) -> None:
     store = await Store.open(s.cascade_db_path)
     application.bot_data["store"] = store
 
+    # Plan v5 R5 — Observability: JSONL-Emitter konfigurieren.
+    # Pfad <CASCADE_HOME>/store/metrics.jsonl, append-only, 50MB-Rotation.
+    try:
+        from cascade.observability import configure_emitter
+        metrics_path = s.cascade_home / "store" / "metrics.jsonl"
+        configure_emitter(path=metrics_path, rotate_at_mb=50.0, keep_files=5)
+        log.info("observability: metrics emitter at %s", metrics_path)
+    except Exception as e:
+        log.warning("observability: configure_emitter failed: %s", e)
+
+    # Plan v5 R6 — SONA: PatternStore zur Verfügung stellen.
+    try:
+        from cascade.patterns import PatternStore
+        patterns_path = s.cascade_home / "store" / "patterns.jsonl"
+        application.bot_data["pattern_store"] = PatternStore(patterns_path)
+        log.info("patterns: store at %s", patterns_path)
+    except Exception as e:
+        log.warning("patterns: init failed: %s", e)
+
     # Owner-Notification: bot frisch gestartet. Hilft beim manuellen
     # Restart-Workflow zu sehen wann der Bot wieder ansprechbar ist
     # (vorher musste man "Bot is typing" oder /status pingen).

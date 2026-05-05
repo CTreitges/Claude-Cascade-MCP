@@ -57,7 +57,7 @@ class TaskPattern:
 # ──────────────────────────────────────────────────────────────────────
 #  Keyword-Extraktion
 # ──────────────────────────────────────────────────────────────────────
-_TOKENIZE_RX = re.compile(r"[A-Za-zÄÖÜäöü0-9_/.-]+")
+_TOKENIZE_RX = re.compile(r"[A-Za-zÄÖÜäöü0-9_]+")
 _STOPWORDS_DE = {
     "der", "die", "das", "den", "dem", "des",
     "und", "oder", "aber", "nicht", "kein",

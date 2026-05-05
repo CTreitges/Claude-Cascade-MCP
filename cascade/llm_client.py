@@ -170,6 +170,14 @@ async def agent_chat(
     if retry_max_backoff_s is not None:
         retry_kwargs["max_backoff_s"] = retry_max_backoff_s
 
+    # Plan v5 R1 — passives Provider-Health-Tracking. Kein automatischer
+    # Failover-Switch hier (das macht der Caller via call_with_failover),
+    # aber jeder Erfolg/Fehler wird notiert → Circuit-Breaker für Phase-J
+    # Migration vorbereitet, plus Telemetrie via observability.
+    from .provider_health import get_health, classify_error, ErrorKind
+    provider_label = "anthropic" if is_claude else "ollama-cloud"
+    _health = get_health(provider_label)
+
     if is_claude:
         from .claude_cli import ClaudeCliError, claude_call
 
@@ -185,7 +193,11 @@ async def agent_chat(
                     timeout_s=int(timeout_s),
                 )
             except ClaudeCliError as e:
+                # Bug 7+8: ClaudeCliError ist meist permanent (CLI fehlt
+                # oder Auth-Issue) — keine Endlos-Retries.
+                _health.record_error(e)
                 raise LLMClientError(f"claude agent call failed: {e}") from e
+            _health.record_success()
             return result.text
 
         return await with_retry(_claude, label=f"agent/{model}", **retry_kwargs)
@@ -202,9 +214,14 @@ async def agent_chat(
     ]
 
     async def _ollama():
-        reply = await _ollama_chat(
-            model=model, messages=messages, s=s, timeout_s=timeout_s, temperature=temperature,
-        )
+        try:
+            reply = await _ollama_chat(
+                model=model, messages=messages, s=s, timeout_s=timeout_s, temperature=temperature,
+            )
+        except Exception as e:
+            _health.record_error(e)
+            raise
+        _health.record_success()
         return reply.text
 
     return await with_retry(_ollama, label=f"agent/{model}", **retry_kwargs)

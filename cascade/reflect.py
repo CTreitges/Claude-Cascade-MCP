@@ -124,3 +124,52 @@ async def persist_lessons(text: str, *, task_id: str, task_text: str) -> None:
         importance="medium",
         tags=f"cascade-bot-mcp,lessons-learned,{tag_keywords}",
     )
+
+
+async def record_success_pattern(
+    *,
+    task_text: str,
+    plan_summary: str = "",
+    sub_task_names: list | None = None,
+    files_changed: list | None = None,
+    iterations: int = 1,
+    cost_usd: float = 0.0,
+    wall_clock_s: float = 0.0,
+    replans_needed: int = 0,
+    pattern_store=None,
+) -> None:
+    """Plan v5 R6 — bei erfolgreichem Run das Pattern speichern.
+
+    Wird aus core.run_cascade nach status='done' gerufen (typ. iter > 1).
+    Trivial-Tasks (iter == 1, no replan) sind als Lehrbeispiel zu dünn.
+    """
+    if iterations <= 1 and replans_needed == 0:
+        return
+    if pattern_store is None:
+        # Lazy-init falls Caller keinen mitgibt
+        try:
+            from cascade.patterns import PatternStore
+            from cascade.config import settings
+            s = settings()
+            pattern_store = PatternStore(s.cascade_home / "store" / "patterns.jsonl")
+        except Exception:
+            return
+    try:
+        from cascade.patterns import record_pattern
+        record_pattern(
+            store=pattern_store,
+            task_text=task_text,
+            plan_summary=plan_summary,
+            sub_task_names=sub_task_names or [],
+            files_changed=files_changed or [],
+            iterations=iterations,
+            cost_usd=cost_usd,
+            wall_clock_s=wall_clock_s,
+            replans_needed=replans_needed,
+        )
+    except Exception:
+        # Best-effort: pattern-recording soll NIEMALS den Run failen.
+        import logging
+        logging.getLogger("cascade.reflect").warning(
+            "record_success_pattern failed", exc_info=True,
+        )

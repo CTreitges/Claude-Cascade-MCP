@@ -34,7 +34,8 @@ def test_extract_keywords():
     kw = extract_keywords("Refactor the help command in the cascade-bot")
     print(f"     {kw}")
     assert "refactor" in kw
-    assert "cascade-bot" in kw
+    # 2026-05-05: Tokenizer trennt jetzt an /-_:.\, → "cascade" + "bot" getrennt
+    assert "cascade" in kw
     assert "the" not in kw  # stopword
     passed("EN keywords clean")
     kw_de = extract_keywords("Verbessere den /help-Command des Cascade-Bots")
