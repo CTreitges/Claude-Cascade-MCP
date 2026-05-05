@@ -52,6 +52,11 @@ class RoleConfig(BaseModel):
     effort: Optional[str] = None
     enable_subagents: bool = False
     max_turns: int = 20
+    # Plan v5 R1 — Failover-Chain für diese Rolle. Wenn primary fail't,
+    # versuche fallback in Reihenfolge. None = nutze role-default-chain.
+    # Format: list of "provider:model" strings, z.B.
+    #   ["anthropic:claude-haiku-4-5", "ollama:kimi-k2.6"]
+    failover_chain: Optional[list[str]] = None
 
     def to_harness_request_kwargs(self) -> Dict[str, Any]:
         """Felder die direkt in HarnessRequest passen."""
@@ -171,6 +176,11 @@ def get_role_config(
     if not provider:
         provider = detect_provider(model)
 
+    # Failover-Chain Resolution: per-role-default falls nicht gesetzt
+    failover_chain = role_ovr.get("failover_chain") or run_overrides.get("failover_chain")
+    if failover_chain is None:
+        failover_chain = _DEFAULT_FAILOVER_CHAINS.get(role, [])
+
     return RoleConfig(
         role=role,
         harness=harness,
@@ -179,7 +189,38 @@ def get_role_config(
         effort=effort,
         enable_subagents=enable_subagents,
         max_turns=max_turns,
+        failover_chain=failover_chain,
     )
+
+
+# Plan v5 R1 — Default Failover-Chains pro Rolle.
+# Format: "provider:model". Primary kommt aus model+provider Auflösung,
+# diese Chain ist NACH dem primary. Beim Match übersprungen.
+_DEFAULT_FAILOVER_CHAINS: Dict[str, list[str]] = {
+    "implementer": [
+        "anthropic:claude-sonnet-4-6",
+        "ollama:kimi-k2.6",
+        "anthropic:claude-haiku-4-5",
+    ],
+    "planner": [
+        "anthropic:claude-opus-4-7",
+        "anthropic:claude-sonnet-4-6",
+    ],
+    "reviewer": [
+        "anthropic:claude-haiku-4-5",
+        "anthropic:claude-sonnet-4-6",
+    ],
+    "triage": [
+        "anthropic:claude-haiku-4-5",
+    ],
+    "subagent": [
+        "ollama:kimi-k2.6",
+        "anthropic:claude-haiku-4-5",
+    ],
+    "quick-review": [
+        "anthropic:claude-haiku-4-5",
+    ],
+}
 
 
 def encode_role_overrides(overrides: Dict[str, Dict[str, Any]]) -> str:

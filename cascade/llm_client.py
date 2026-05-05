@@ -240,6 +240,7 @@ async def _ollama_chat(
         )
     except Exception as e:
         from .rate_limit import RateLimitError, parse_retry_after
+        from .provider_health import ErrorKind, classify_error
         # Build a richer error fingerprint than just str(e). Ollama's
         # ResponseError occasionally has empty str() but a populated
         # status_code attribute — without status info, our short-
@@ -257,11 +258,19 @@ async def _ollama_chat(
         if body:
             parts.append(body[:300])
         diag = " — ".join(parts) if parts else f"{type_name} (no detail)"
-        # User-explicit policy (2026-04-27): ALL Ollama Cloud errors are
-        # treated as transient — 5xx, 4xx, network drops, timeouts, weird
-        # client errors. with_retry waits and tries again until the service
-        # recovers. Permanent config errors (no API key) are raised earlier
-        # and never reach this except.
+
+        # Plan v5 R1 — permanent errors (401/403/404) NICHT als
+        # RateLimitError raisen, sondern als LLMClientError durchreichen.
+        # Sonst wartet with_retry 28× je 1h — sinnlos weil Auth-Fehler
+        # niemals self-heal'd. Caller (call_with_failover) springt
+        # automatisch auf den nächsten Provider.
+        kind = classify_error(e)
+        if kind == ErrorKind.PERMANENT:
+            raise LLMClientError(
+                f"Ollama Cloud permanent-error (no retry): {diag}"
+            ) from e
+
+        # Transient + rate-limit + unknown: wie bisher, mit_retry handled
         raise RateLimitError(
             f"Ollama Cloud error (will retry): {diag}",
             retry_after=parse_retry_after(diag),
