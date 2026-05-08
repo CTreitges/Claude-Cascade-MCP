@@ -134,6 +134,14 @@ async def run_task_for_chat(
         overrides["cascade_websearch_enabled"] = bool(we)
     if (mp := (sess or {}).get("multiplan_enabled")) is not None:
         overrides["cascade_multiplan_enabled"] = bool(mp)
+    # Plan v4 + v5 — Feature-Flag-Overrides die bisher in _TOGGLE_KEYS standen
+    # aber nicht durchgereicht wurden. Damit der /toggles-Klick auch wirksam wird.
+    if (uo := (sess or {}).get("use_orchestrator")) is not None:
+        overrides["cascade_use_orchestrator"] = bool(uo)
+    if (rh := (sess or {}).get("reviewer_via_harness")) is not None:
+        overrides["cascade_reviewer_via_harness"] = bool(rh)
+    if (utr := (sess or {}).get("use_tier_routing")) is not None:
+        overrides["cascade_use_tier_routing"] = bool(utr)
     # Apply per-chat model+effort overrides too — so the snapshot-drift check
     # below sees the SAME effective Settings the cascade would actually run with.
     model_overrides: dict = {}

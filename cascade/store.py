@@ -252,6 +252,8 @@ _MIGRATIONS = [
     # Plan v4 Phase J — opt-in Feature-Toggles (per-Chat)
     "ALTER TABLE sessions ADD COLUMN use_orchestrator INTEGER",
     "ALTER TABLE sessions ADD COLUMN reviewer_via_harness INTEGER",
+    # Plan v5 R2 — Tier-Routing per-chat-Toggle
+    "ALTER TABLE sessions ADD COLUMN use_tier_routing INTEGER",
     # Chat-Memory v2 — file content + classification on chat_messages
     "ALTER TABLE chat_messages ADD COLUMN file_path TEXT",
     "ALTER TABLE chat_messages ADD COLUMN file_content TEXT",
@@ -1127,6 +1129,8 @@ class Store:
             # Plan v4 Phase J
             "use_orchestrator",
             "reviewer_via_harness",
+            # Plan v5 R2
+            "use_tier_routing",
         }
         if column not in allowed:
             raise ValueError(f"unknown int setting: {column}")
@@ -1181,6 +1185,9 @@ class Store:
             ),
             "reviewer_via_harness": (
                 row["reviewer_via_harness"] if "reviewer_via_harness" in row.keys() else None
+            ),
+            "use_tier_routing": (
+                row["use_tier_routing"] if "use_tier_routing" in row.keys() else None
             ),
             "updated_at": row["updated_at"],
         }

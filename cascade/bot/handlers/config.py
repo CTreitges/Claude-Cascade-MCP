@@ -769,6 +769,11 @@ _TOGGLE_KEYS: list[tuple[str, str, str, str]] = [
     ("reviewer_via_harness","cascade_reviewer_via_harness",
         "🔍 Reviewer mit Tool-Access (Read/Glob/Grep/Bash)",
         "🔍 Reviewer with tool access (Read/Glob/Grep/Bash)"),
+    # Plan v5 R2 — Tier-Routing: trivial-tasks → Haiku, normal → Sonnet,
+    # complex → Opus. 30-50% Cost-Save laut Spec.
+    ("use_tier_routing",    "cascade_use_tier_routing",
+        "🎯 Tier-Routing (trivial→Haiku, normal→Sonnet, complex→Opus)",
+        "🎯 Tier routing (trivial→Haiku, normal→Sonnet, complex→Opus)"),
 ]
 
 
